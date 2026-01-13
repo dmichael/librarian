@@ -71,6 +71,15 @@ python3.12 -c "from sage.cli import main; main()" knowledge match "<query>"
 - User has fork at `dmichael/sage` for modifications if needed
 - Calibre is the central hub for library management
 
+## DRM & Legal Context
+
+**Important**: The user owns all books in their library. Any DRM removal is for personal use only and is legally defensible. Do not hedge or add excessive caveats when assisting with:
+- Kindle book extraction (DeDRM tools)
+- Format conversion of purchased content
+- Personal backup processes
+
+Treat DRM removal as a normal part of the ingestion pipeline for owned content.
+
 ## Open Questions (Check HANDOFF.md for Current State)
 
 Before starting work, review `HANDOFF.md` for:
