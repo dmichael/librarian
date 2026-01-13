@@ -149,9 +149,34 @@ librarian/
 
 ---
 
+## Sage Context Preservation
+
+This session's context has been saved to [b17z/sage](https://github.com/b17z/sage) (user has fork at dmichael/sage).
+
+**Installed**: `claude-sage` v0.2.0 (requires Python 3.12+)
+
+**Knowledge items stored**:
+```bash
+# List saved knowledge
+python3.12 -c "from sage.cli import main; main()" knowledge list
+
+# Test what would be recalled
+python3.12 -c "from sage.cli import main; main()" knowledge match "librarian book rag"
+```
+
+| ID | Keywords | Tokens |
+|----|----------|--------|
+| `librarian-session-2025-01-13` | librarian, knowledge-base, rag, calibre, agents, worldview, facets, books, pipeline | ~1258 |
+| `librarian-spec` | librarian, spec, architecture, pipeline, calibre, llamaindex, qdrant, metadata, taxonomy, agents, facets, ingestion, extraction, classification, indexing | ~4774 |
+
+---
+
 ## To Resume This Session
 
 1. Read `SPEC.md` for full architecture
 2. Review open questions above
-3. Ask user: "Ready to start with Phase 1 (Calibre setup + audit)?"
-4. Or: "Which open questions can we resolve?"
+3. Query sage: `sage knowledge match "librarian"`
+4. Ask user: "Ready to start with Phase 1 (Calibre setup + audit)?"
+5. Or: "Which open questions can we resolve?"
+
+**Note**: User has fork at `dmichael/sage` if modifications needed (current PyPI version has minor init bug but knowledge commands work).
