@@ -1,0 +1,45 @@
+[project]
+name = "librarian"
+version = "0.1.0"
+description = "Personal knowledge base for agent intelligence"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "marker-pdf>=1.0.0",
+    # Embedding pipeline
+    "llama-index-core>=0.12.0",
+    "llama-index-vector-stores-qdrant>=0.4.0",
+    "llama-index-embeddings-huggingface>=0.4.0",
+    "qdrant-client>=1.12.0",
+    "sentence-transformers>=3.3.0",
+    # Classification
+    "httpx>=0.27.0",  # For Ollama API calls
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]  # For Claude classification
+
+[project.scripts]
+librarian-ingest = "librarian.ingest:main"
+librarian-extract = "librarian.extract:main"
+librarian-classify = "librarian.classify:main"
+librarian-index = "librarian.index:main"
+librarian-query = "librarian.query:main"
+librarian-ask = "librarian.ask:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/librarian"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

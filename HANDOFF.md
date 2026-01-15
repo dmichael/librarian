@@ -1,182 +1,148 @@
 # Session Handoff: Librarian Project
 
-**Date**: 2025-01-13
+**Date**: 2025-01-15
 **Branch**: `claude/librarian-knowledge-base-4uRmW`
 
 ---
 
-## Context Summary
+## Session 2025-01-15: Full Pipeline Implemented
 
-The user is building **Librarian** - a personal knowledge base system that transforms their book collection into structured knowledge accessible to AI agents. This is not just document search; it's "epistemology as infrastructure."
+### What Was Built
 
-### Key Insight from Discussion
-
-The user's framing evolved during conversation:
-1. Started as "process books for RAG"
-2. Evolved to "agents are facets of my personal worldview"
-3. Final framing: **the library IS the user's epistemology**, and agents inherit different views into it
-
-Example discussed: A "Buffett Investment Advisor" agent wouldn't just have Buffett's letters—it would have access to related psychology, business history, and philosophy texts that the user has curated as relevant to that worldview.
-
----
-
-## Decisions Made
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Build vs Buy | **Compose** existing tools | Don't reinvent; user explicitly said no forking/extending |
-| Library hub | **Calibre** | Industry standard, CLI tools, plugin ecosystem |
-| Extraction | **Marker + ebook_splitter** | Best-of-breed for PDF and EPUB respectively |
-| RAG framework | **LlamaIndex** | Mature, flexible, good composability |
-| Vector store | **Qdrant** (tentative) | Open source, good performance, faceted filtering |
-| Classification | **Human-in-the-loop** | LLM suggests, user approves |
-
----
-
-## Open Questions (Not Yet Resolved)
-
-1. **Scale of library** - How many books? % physical vs digital?
-2. **DRM stance** - Will user use DeDRM tools or stick to DRM-free?
-3. **Budget** - Hardware (scanner) budget tolerance?
-4. **Annotation capture** - How to efficiently capture reading highlights/notes?
-5. **Embedding model** - OpenAI, Cohere, or local?
-6. **Chunking strategy** - Chapter-based? Token-based? Semantic?
-
----
-
-## What Was Researched
-
-### Tools Evaluated
-
-**RAG Frameworks:**
-- LlamaIndex, LangChain, Haystack, RAGFlow, DSPy
-- Conclusion: LlamaIndex for flexibility + composition
-
-**Personal KB Tools:**
-- Khoj, Quivr, Cognee
-- Conclusion: Good but not book-specific enough; prefer composition
-
-**Book-Specific:**
-- Calibre (with new AI features in 8.x)
-- Calibre-RAG MCP server
-- ebook_splitter for chapter extraction
-
-**Cloud KBaaS:**
-- AWS Bedrock Knowledge Bases
-- Azure AI Search
-- Google Vertex AI RAG
-- Conclusion: Viable but prefer self-hosted for personal library
-
-### Key Resources Identified
-
-- [Marker](https://github.com/VikParuchuri/marker) - PDF → Markdown
-- [ebook_splitter](https://github.com/hirowa/ebook_splitter) - EPUB → structured chapters
-- [Calibre DeDRM](https://itsfoss.com/calibre-remove-drm-kindle/) - If user chooses this path
-- [CZUR scanners](https://shop.czur.com/blogs/blog/best-book-scanners-for-library-digitization-2025) - Non-destructive book scanning
-
----
-
-## Architecture Overview
+Complete RAG pipeline from book to grounded answers:
 
 ```
-Physical/Digital Books
-        │
-        ▼
-   ┌─────────┐
-   │ Calibre │ ← Central hub, metadata, format conversion
-   └────┬────┘
-        │
-        ▼
-   ┌─────────────┐
-   │ Extraction  │ ← Marker, ebook_splitter → structured markdown
-   └──────┬──────┘
-          │
-          ▼
-   ┌──────────────┐
-   │Classification│ ← LLM suggests, human approves subjects + agent mappings
-   └──────┬───────┘
-          │
-          ▼
-   ┌─────────────┐
-   │   Indexing  │ ← LlamaIndex → Qdrant (per-facet collections)
-   └──────┬──────┘
-          │
-          ▼
-   ┌─────────────┐
-   │   Agents    │ ← Query facet collections, inherit worldview
-   └─────────────┘
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Extract   │────▶│  Classify   │────▶│    Index    │────▶│     Ask     │
+│  (markdown) │     │ (subjects)  │     │  (vectors)  │     │   (RAG)     │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+     marker           ollama/claude       BGE + Qdrant       Grounded answers
+                                                             with citations
 ```
 
----
+### CLI Commands
 
-## File Structure Created
-
-```
-librarian/
-└── SPEC.md          # Full specification document (542 lines)
-    - Intent & vision
-    - 6-stage pipeline architecture
-    - Tool selections with rationale
-    - Metadata schema (YAML example)
-    - Subject taxonomy structure
-    - Vector store organization
-    - Agent architecture (hierarchy, access patterns)
-    - Implementation phases
-    - Open questions
-```
-
----
-
-## Suggested Next Steps
-
-1. **Answer open questions** - Scale, budget, DRM stance
-2. **Audit current library** - What does user actually have?
-3. **Build extraction pipeline** - EPUB → markdown first (lowest friction)
-4. **Prototype one agent** - Buffett advisor with 10-20 texts
-5. **Iterate** - Refine taxonomy and access patterns based on usage
-
----
-
-## Key Quotes from User
-
-> "One goal of the library is to bootstrap agent context"
-
-> "I could do this thing for each agent as I dev them but ultimately all agents are facets of my personal worldview (which of course could expand)"
-
-> "I don't want to fork or extend existing projects but will do commercial or compose different projects"
-
-> "Some text (most) is copyright but I own the text - it's just not something I can expect on the web"
-
----
-
-## Sage Context Preservation
-
-This session's context has been saved to [b17z/sage](https://github.com/b17z/sage) (user has fork at dmichael/sage).
-
-**Installed**: `claude-sage` v0.2.0 (requires Python 3.12+)
-
-**Knowledge items stored**:
 ```bash
-# List saved knowledge
-python3.12 -c "from sage.cli import main; main()" knowledge list
-
-# Test what would be recalled
-python3.12 -c "from sage.cli import main; main()" knowledge match "librarian book rag"
+librarian-extract                    # PDF/EPUB → markdown
+librarian-classify                   # LLM suggests subjects, human approves
+librarian-classify --auto            # Auto-accept LLM suggestions
+librarian-index                      # Embed and store in Qdrant
+librarian-query "question"           # Pure retrieval (returns chunks)
+librarian-ask "question"             # RAG synthesis with citations
+librarian-ask --library therapy "q"  # Scoped to library
 ```
 
-| ID | Keywords | Tokens |
-|----|----------|--------|
-| `librarian-session-2025-01-13` | librarian, knowledge-base, rag, calibre, agents, worldview, facets, books, pipeline | ~1258 |
-| `librarian-spec` | librarian, spec, architecture, pipeline, calibre, llamaindex, qdrant, metadata, taxonomy, agents, facets, ingestion, extraction, classification, indexing | ~4774 |
+### Key Features
+
+| Feature | Implementation |
+|---------|----------------|
+| **Extraction** | Marker for PDF, custom EPUB parser |
+| **Classification** | Ollama (llama3.2) or Claude API |
+| **Embeddings** | BGE-base-en-v1.5 (local, Apple Silicon) |
+| **Vector Store** | Qdrant (local persistence) |
+| **Page Numbers** | Extracted from Marker's embedded markers |
+| **Library Fences** | `--library` flag scopes queries |
+| **Subject Filters** | `--subject psychology/*` for faceted search |
+| **RAG Synthesis** | Ollama/Claude with grounded citations |
+
+### Calibre Custom Columns
+
+| Column | Purpose |
+|--------|---------|
+| `source_hash` | Detect when source file changes |
+| `extraction_date` | When extraction ran |
+| `extraction_tool` | Tool + version |
+| `subjects` | Classification tags (e.g., "psychology/therapy") |
+| `library` | Bounded collection (e.g., "therapy", "investing") |
+
+### Data Locations
+
+```
+~/data/librarian/
+├── calibre/           # Calibre library (source of truth)
+├── converted/         # Extracted markdown by book_id
+│   └── {id}/full.md
+├── qdrant/            # Vector store
+└── source/            # Intake folder for new books
+```
+
+### Example Usage
+
+```bash
+# Full pipeline for new book
+calibredb add ~/Downloads/book.pdf --library-path ~/data/librarian/calibre
+librarian-extract --book-id 3
+librarian-classify --book-id 3
+librarian-index --book-id 3
+
+# Ask questions with citations
+librarian-ask --library therapy "How do I cope when overwhelmed?"
+# Returns synthesized answer with page-numbered citations
+```
 
 ---
 
-## To Resume This Session
+## Resolved Questions
 
-1. Read `SPEC.md` for full architecture
-2. Review open questions above
-3. Query sage: `sage knowledge match "librarian"`
-4. Ask user: "Ready to start with Phase 1 (Calibre setup + audit)?"
-5. Or: "Which open questions can we resolve?"
+| Question | Resolution |
+|----------|------------|
+| Embedding model | BGE-base-en-v1.5 (local, good quality/speed balance) |
+| Vector store | Qdrant (local, supports filtering) |
+| Chunking | 512 tokens, 50 overlap, sentence-aware |
+| LLM for classification | Ollama llama3.2 (local) or Claude (API) |
+| Library boundaries | `library` custom column in Calibre, filterable at query time |
 
-**Note**: User has fork at `dmichael/sage` if modifications needed (current PyPI version has minor init bug but knowledge commands work).
+---
+
+## Open Questions
+
+1. **Annotation capture** - How to integrate reading highlights/notes?
+2. **Agent personas** - Build specific agent wrappers (therapy coach, etc.)?
+3. **Multi-book reasoning** - Cross-reference across library?
+4. **Caching layer** - Save embeddings to parquet for portability?
+
+---
+
+## Files Created This Session
+
+```
+src/librarian/
+├── ask.py         # RAG synthesis with citations
+├── classify.py    # LLM-assisted classification
+├── index.py       # Embedding + Qdrant storage
+├── query.py       # Pure retrieval with filters
+
+config/
+├── settings.yaml  # Full config with embedding/classification settings
+└── taxonomy.yaml  # Subject hierarchy
+
+docs/
+└── x402-extraction-service.md  # Spec for pay-per-page extraction API
+```
+
+---
+
+## Technical Notes
+
+- **Python 3.12** required (3.14 has Pydantic issues with marker-pdf)
+- **Ollama** installed via `brew install ollama`, running as service
+- **Apple Silicon** uses MPS for embeddings (~50 embeddings/sec)
+- **Page numbers** extracted from Marker's `<span id="page-XXX">` markers
+
+---
+
+## To Resume
+
+1. Read this file for context
+2. Run `librarian-ask --library therapy "test query"` to verify setup
+3. Check Ollama: `brew services list | grep ollama`
+4. Add more books to grow the library
+
+---
+
+## Previous Session Context
+
+See git history for earlier HANDOFF.md versions covering:
+- Calibre-centric architecture decisions
+- Initial spec and vision discussions
+- Tool evaluation and selection rationale

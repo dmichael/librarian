@@ -1,0 +1,27 @@
+# Local config override
+config/settings.local.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Data directories (if accidentally created in repo)
+calibre/
+books/
+converted/
+qdrant/
+
+# DeDRM and other tools (legal gray area)
+tools/plugins/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

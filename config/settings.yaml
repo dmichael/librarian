@@ -1,0 +1,32 @@
+# Librarian Configuration
+
+library_path: ~/data/librarian/calibre
+output_path: ~/data/librarian/converted
+
+source_paths:
+  - ~/data/librarian/source
+
+# Embedding configuration
+embedding:
+  model: BAAI/bge-base-en-v1.5  # Good balance of quality/speed for Apple Silicon
+  # Alternatives: sentence-transformers/all-MiniLM-L6-v2 (faster, smaller)
+  #               intfloat/e5-base-v2 (comparable quality)
+  device: mps  # Use Apple Silicon GPU, or "cpu" for fallback
+
+# Vector store configuration
+vector_store:
+  type: qdrant
+  path: ~/data/librarian/qdrant  # Local Qdrant storage
+  collection: librarian_full
+
+# Chunking configuration
+chunking:
+  chunk_size: 512  # tokens
+  chunk_overlap: 50  # tokens
+
+# Classification LLM configuration
+classification:
+  provider: ollama  # or "anthropic" for Claude
+  model: llama3.2   # Ollama model, or claude-sonnet-4-20250514 for Anthropic
+  # For Anthropic, set ANTHROPIC_API_KEY env var
+  sample_size: 5000  # chars to sample from book for classification
