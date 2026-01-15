@@ -407,73 +407,97 @@ Agent queries:
 
 ---
 
-## 6. Agent Architecture
+## 6. Librarian as Knowledge Base Gateway
 
-### 6.1 Agent Definition
+### 6.1 Architectural Clarification
 
-```yaml
-# agents/buffett-advisor/config.yaml
-
-name: "Buffett Investment Advisor"
-id: "buffett-advisor"
-description: "Value investing advisor grounded in Buffett/Munger philosophy"
-
-# Knowledge access
-collections:
-  primary:
-    - librarian_investing
-  secondary:
-    - librarian_psychology
-    - librarian_business
-
-# Retrieval settings
-retrieval:
-  top_k: 10
-  primary_weight: 1.0
-  secondary_weight: 0.5
-  rerank: true
-
-# Model settings
-model:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  temperature: 0.3
-```
-
-### 6.2 Agent Hierarchy
+**Librarian is infrastructure, not an agent framework.**
 
 ```
-BaseWorldview (meta-agent)
-│   → Access: full library
-│   → Purpose: synthesize across all domains
-│
-├── InvestingFacet
-│   ├── BuffettAdvisor
-│   │   → Primary: value investing, Buffett corpus
-│   │   → Secondary: psychology, business history
-│   │
-│   └── MacroAnalyst
-│       → Primary: macro economics, market history
-│       → Secondary: geopolitics, monetary policy
-│
-├── PhilosophyFacet
-│   ├── StoicCounsel
-│   │   → Primary: stoic texts, practical philosophy
-│   │   → Secondary: psychology, biography
-│   │
-│   └── EthicsAdvisor
-│       → Primary: ethics, moral philosophy
-│       → Secondary: history, case studies
-│
-└── TechnologyFacet
-    ├── TechAnalyst
-    │   → Primary: technology, software engineering
-    │   → Secondary: business strategy, history of tech
-    │
-    └── AIStrategist
-        → Primary: AI/ML texts
-        → Secondary: philosophy of mind, ethics
+┌──────────────────────────────────────────────────────────────┐
+│                    EXTERNAL AGENTS                            │
+│  (Claude Code, chatbots, scripts, custom apps)               │
+│                                                               │
+│  Agents bring:                                                │
+│    • Persona and tone                                         │
+│    • Conversation memory                                      │
+│    • Task-specific reasoning                                  │
+│    • User context                                             │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           │ query / ask
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│                 LIBRARIAN (KB GATEWAY)                        │
+│                                                               │
+│  Librarian provides:                                          │
+│    • Scoped retrieval (library fences, subject filters)      │
+│    • Grounded citations with page numbers                     │
+│    • RAG synthesis from your book collection                  │
+│    • Human-curated classification                             │
+│                                                               │
+│  Librarian does NOT provide:                                  │
+│    • Agent personas                                           │
+│    • Conversation history                                     │
+│    • Task orchestration                                       │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           ▼
+              Your Book Collection (Calibre)
 ```
+
+The "facets" concept (Section 1.3) still applies—but facets are **query scopes**, not agent implementations. An external "Buffett Advisor" agent queries Librarian with `--library investing`, and Librarian returns grounded answers from that slice of the library.
+
+### 6.2 Interface Options
+
+| Interface | Description | Status |
+|-----------|-------------|--------|
+| **CLI** | Human interaction, shell scripts | ✅ Implemented |
+| **Python API** | `import librarian` for local agents | Planned |
+| **HTTP API** | REST endpoint for any language | Planned |
+| **MCP Server** | Tool use for Claude/LLM agents | Planned (recommended) |
+
+### 6.3 MCP Server (Recommended Path)
+
+MCP (Model Context Protocol) allows LLMs to call Librarian as a tool mid-conversation:
+
+```
+User: "What does my library say about dealing with anxiety?"
+
+Claude Code:
+  1. Calls librarian MCP tool: ask("dealing with anxiety", library="therapy")
+  2. Receives grounded answer with citations
+  3. Synthesizes response with persona/context
+```
+
+This keeps Librarian focused on retrieval + grounding while agents handle interaction + reasoning.
+
+### 6.4 Query Interface
+
+Regardless of interface, Librarian exposes these core operations:
+
+```
+# Pure retrieval - returns chunks with metadata
+query(question, library?, subject?, top_k?) → chunks[]
+
+# RAG synthesis - returns grounded answer with citations
+ask(question, library?, subject?) → {answer, citations[]}
+
+# Metadata
+list_libraries() → string[]
+list_subjects() → string[]
+book_info(book_id) → metadata
+```
+
+### 6.5 Why This Separation Matters
+
+1. **Agents are contextual** - A therapy coach in Claude Code differs from one in a mobile app. Librarian shouldn't encode that.
+
+2. **Single responsibility** - Librarian does one thing well: ground answers in your library.
+
+3. **Composability** - Any agent, any framework, any context can call Librarian.
+
+4. **Your library, many lenses** - The same KB serves different agents with different scopes.
 
 ---
 

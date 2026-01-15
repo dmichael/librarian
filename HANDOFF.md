@@ -1,7 +1,46 @@
 # Session Handoff: Librarian Project
 
 **Date**: 2025-01-15
-**Branch**: `claude/librarian-knowledge-base-4uRmW`
+**Branch**: `claude/review-main-branch-rsESp`
+
+---
+
+## Session 2025-01-15b: Architectural Clarification
+
+### Key Decision: Librarian is a KB Gateway
+
+Refined the project direction based on user insight:
+
+**Before**: Librarian builds specialized agents (therapy coach, Buffett advisor, etc.) with personas baked in.
+
+**After**: Librarian is **infrastructure**—a knowledge base gateway that external agents call for grounded answers.
+
+```
+Agents (external, contextual)     Librarian (KB gateway)
+├── Persona                       ├── Scoped retrieval
+├── Conversation memory           ├── Grounded citations
+├── Task reasoning                └── RAG synthesis
+└── User context
+```
+
+### Why This Matters
+
+1. **Agents are contextual** - Same "therapy coach" behaves differently in Claude Code vs a mobile app
+2. **Single responsibility** - Librarian does one thing: ground answers in your library
+3. **Composability** - Any agent, framework, or context can call Librarian
+
+### Interface Priority
+
+| Interface | Status | Notes |
+|-----------|--------|-------|
+| CLI | ✅ Done | Human use, scripts |
+| MCP Server | Next | Claude/LLM tool use |
+| Python API | Later | Local agents |
+| HTTP API | Later | Remote/polyglot |
+
+### Updated SPEC.md
+
+Section 6 rewritten to document the gateway architecture, interface options, and core query operations.
 
 ---
 
@@ -97,9 +136,15 @@ librarian-ask --library therapy "How do I cope when overwhelmed?"
 ## Open Questions
 
 1. **Annotation capture** - How to integrate reading highlights/notes?
-2. **Agent personas** - Build specific agent wrappers (therapy coach, etc.)?
+2. **MCP server design** - What tools to expose? (ask, query, list_libraries, etc.)
 3. **Multi-book reasoning** - Cross-reference across library?
 4. **Caching layer** - Save embeddings to parquet for portability?
+
+## Resolved This Session
+
+| Question | Resolution |
+|----------|------------|
+| Agent personas | **Not Librarian's job.** Agents are external and contextual. Librarian is a KB gateway. |
 
 ---
 
