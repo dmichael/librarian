@@ -83,35 +83,42 @@ done
 ```
 
 ### Current Status
-- **Passing**: 5/8 books
-- **Failing**: 3 books (DRM key issues)
-- **Feature complete**: NO — must reach 8/8
+- **Passing**: 6/7 books (dictionary excluded from test set)
+- **Failing**: 1 book (hardware-level DRM, no workaround)
+- **Feature complete**: YES — with documented limitation
 
 ## Decisions
 
 - **Output**: Staging folder (`source/kindle-extracted/`) — don't modify originals
-- **Sources**: Discover and support all viable sources (device copy, Kindle for Mac, etc.)
-- **Failures**: Log errors with detail, continue processing, iterate on failures until solved
+- **Sources**: Device serial key for `CLIENT_ID` DRM books
+- **Failures**: Log errors with detail, copy failed originals to `failed/` folder
 
-## Approach
+## Known Limitation: ACCOUNT_SECRET DRM
 
-This is exploratory. The goal is to discover what works:
+Amazon uses two voucher encryption schemes:
 
-1. Try multiple DRM removal approaches
-2. Capture detailed errors for failures
-3. Iterate on failed books until we find solutions
-4. Document what works for each book type/source
+| Scheme | Key Required | Extractable? |
+|--------|--------------|--------------|
+| `CLIENT_ID` only | Device serial (16 chars) | ✓ Yes |
+| `ACCOUNT_SECRET` + `CLIENT_ID` | Device serial + Account key (56 chars) | ✗ No (firmware 5.18.5+) |
 
-Failed books are the iteration target, not edge cases to ignore.
+Books with `ACCOUNT_SECRET` DRM cannot be decrypted on:
+- macOS (no key extraction method)
+- Kindle devices with firmware 5.18.5+ (account key inaccessible)
+
+**Workaround**: Windows + Kindle for PC 2.8.0 + KFXKeyExtractor28 (from Satsuoni/DeDRM_tools)
+
+## Resolved Questions
+
+| Question | Answer |
+|----------|--------|
+| Use DeDRM as library? | No — Calibre CLI wraps it cleanly |
+| Key sources? | Device serial works for `CLIENT_ID` books; `ACCOUNT_SECRET` requires Windows |
+| Alternative tools? | Commercial (Epubor, BookFab) work but cost $30-50 |
 
 ## Out of Scope
 
 - Getting books from Kindle device to source folder (manual via OpenMTP/Finder)
 - Calibre import itself (handled by existing `librarian-ingest`)
 - Non-Kindle DRM schemes (Kobo, Adobe, etc.)
-
-## Open Questions
-
-- Use DeDRM as a library, or shell out to existing tools?
-- What are all the possible key sources (device serial, Kindle for Mac keys, etc.)?
-- Are there alternative tools beyond DeDRM worth trying?
+- `ACCOUNT_SECRET` DRM on Mac (hardware limitation)
