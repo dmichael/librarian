@@ -15,6 +15,9 @@ books/
 converted/
 qdrant/
 
+# Agent worktrees
+.worktrees/
+
 # DeDRM and other tools (legal gray area)
 tools/plugins/
 
