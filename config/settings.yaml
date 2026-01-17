@@ -5,6 +5,7 @@ output_path: ~/data/librarian/converted
 
 source_paths:
   - ~/data/librarian/source
+  - ~/Library/Containers/com.amazon.Lassen/Data/Library/eBooks  # Kindle for Mac
 
 # Embedding configuration
 embedding:
@@ -23,6 +24,9 @@ vector_store:
 chunking:
   chunk_size: 512  # tokens
   chunk_overlap: 50  # tokens
+
+# Kindle device serial (needed for DRM decryption, MTP doesn't expose it)
+kindle_serial: GR73H30154540QV4
 
 # Classification LLM configuration
 classification:

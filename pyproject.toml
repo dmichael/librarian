@@ -21,6 +21,7 @@ anthropic = ["anthropic>=0.40.0"]  # For Claude classification
 
 [project.scripts]
 librarian-ingest = "librarian.ingest:main"
+librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
 librarian-extract = "librarian.extract:main"
 librarian-classify = "librarian.classify:main"
 librarian-index = "librarian.index:main"

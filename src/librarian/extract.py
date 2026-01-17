@@ -41,20 +41,66 @@ def compute_file_hash(file_path: Path) -> str:
     return f"sha256:{sha256.hexdigest()}"
 
 
-def get_source_file(book: dict) -> Path | None:
-    """Get the source file path from Calibre book record."""
+# Formats we can extract directly
+DIRECT_FORMATS = [".epub", ".pdf"]
+# Formats that need conversion to EPUB first
+KINDLE_FORMATS = [".azw3", ".azw", ".mobi", ".kfx"]
+
+
+def get_source_file(book: dict) -> tuple[Path | None, bool]:
+    """Get the source file path from Calibre book record.
+
+    Returns:
+        Tuple of (path, needs_conversion) where needs_conversion is True
+        if the format requires conversion to EPUB before extraction.
+    """
     formats = book.get("formats", [])
     if not formats:
-        return None
-    # Prefer EPUB, then PDF
+        return None, False
+
+    # Prefer formats we can extract directly
     for fmt in formats:
         if fmt.lower().endswith(".epub"):
-            return Path(fmt)
+            return Path(fmt), False
     for fmt in formats:
         if fmt.lower().endswith(".pdf"):
-            return Path(fmt)
-    # Fall back to first format
-    return Path(formats[0]) if formats else None
+            return Path(fmt), False
+
+    # Check for Kindle formats that need conversion
+    for fmt in formats:
+        suffix = Path(fmt).suffix.lower()
+        if suffix in KINDLE_FORMATS:
+            return Path(fmt), True
+
+    # Fall back to first format (may not be extractable)
+    return Path(formats[0]), False
+
+
+def convert_to_epub(source: Path, output_dir: Path) -> Path | None:
+    """Convert Kindle format to EPUB using Calibre's ebook-convert.
+
+    Returns:
+        Path to converted EPUB, or None if conversion failed.
+    """
+    epub_path = output_dir / "converted.epub"
+
+    cmd = [
+        "ebook-convert",
+        str(source),
+        str(epub_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"ebook-convert failed: {result.stderr}", file=sys.stderr)
+        return None
+
+    if not epub_path.exists():
+        print("ebook-convert produced no output", file=sys.stderr)
+        return None
+
+    return epub_path
 
 
 def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
@@ -186,13 +232,29 @@ def extract_epub(source: Path, output_dir: Path) -> bool:
         return False
 
 
-def extract_book(book: dict, source_file: Path, output_dir: Path) -> bool:
-    """Extract a single book to markdown."""
+def extract_book(book: dict, source_file: Path, output_dir: Path, needs_conversion: bool = False) -> bool:
+    """Extract a single book to markdown.
+
+    Args:
+        book: Calibre book metadata dict
+        source_file: Path to the source file
+        output_dir: Base output directory for extracted content
+        needs_conversion: If True, convert Kindle format to EPUB first
+    """
     book_id = book["id"]
     book_output = output_dir / str(book_id)
     book_output.mkdir(parents=True, exist_ok=True)
 
     suffix = source_file.suffix.lower()
+
+    # Handle Kindle formats by converting to EPUB first
+    if needs_conversion or suffix in KINDLE_FORMATS:
+        print(f"  Converting {suffix} to EPUB...")
+        epub_path = convert_to_epub(source_file, book_output)
+        if epub_path is None:
+            return False
+        source_file = epub_path
+        suffix = ".epub"
 
     if suffix == ".pdf":
         return extract_pdf(source_file, book_output)
@@ -263,7 +325,7 @@ def main():
         if args["book_ids"] and book_id not in args["book_ids"]:
             continue
 
-        source_file = get_source_file(book)
+        source_file, needs_conversion = get_source_file(book)
         if not source_file or not source_file.exists():
             print(f"[{book_id}] {title}: No source file found, skipping")
             continue
@@ -273,12 +335,13 @@ def main():
             continue
 
         if args["dry_run"]:
-            print(f"[{book_id}] {title}: Would extract from {source_file.suffix}")
+            fmt_note = f" (convert to EPUB)" if needs_conversion else ""
+            print(f"[{book_id}] {title}: Would extract from {source_file.suffix}{fmt_note}")
             continue
 
         print(f"[{book_id}] {title}: Extracting...")
 
-        if extract_book(book, source_file, output_path):
+        if extract_book(book, source_file, output_path, needs_conversion):
             source_hash = compute_file_hash(source_file)
             update_calibre_extraction_state(library_path, book_id, source_hash)
             print(f"[{book_id}] {title}: Done")

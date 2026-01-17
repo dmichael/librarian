@@ -1,7 +1,75 @@
 # Session Handoff: Librarian Project
 
-**Date**: 2025-01-15
-**Branch**: `claude/librarian-knowledge-base-4uRmW`
+**Date**: 2025-01-17
+**Branch**: `main`
+
+---
+
+## Session 2025-01-17: Kindle Integration (In Progress)
+
+### Goal
+Integrate Amazon Kindle books into the librarian pipeline:
+1. Sync books from Kindle device to local folder
+2. Ingest into Calibre with DeDRM decryption
+3. Extract, index, and query
+
+### What Was Built
+
+- `librarian-kindle-sync` command - shows sync folder status
+- Updated `ingest.py` with Kindle source detection (ASIN patterns)
+- Kindle serial stored in config for DeDRM: `GR73H30154540QV4`
+- Sync folder structure: `source/kindle/{SERIAL}/`
+
+### Current State
+
+**Working:**
+- 7 Kindle books copied to `~/data/librarian/source/kindle/GR73H30154540QV4/`
+- These books were manually copied from Kindle via Finder in a previous session
+- The ingest/extract/index pipeline works for already-copied books
+
+**Blocked: MTP Programmatic Access**
+
+The user reports a previous Claude session was able to programmatically read and copy files from a connected Kindle. The current session has NOT solved this:
+
+- `libmtp` CLI tools (`mtp-files`, `mtp-getfile`) grab exclusive USB access
+- Each command disconnects the device, so listing files works but copying fails
+- `simple-mtpfs` (FUSE mount) is Linux-only
+- OpenMTP is GUI-only
+
+**IMPORTANT**: Do NOT accept that programmatic Kindle access is impossible on macOS. A previous session achieved it. Investigate:
+1. What tool was used previously?
+2. Was the Kindle mounted as USB mass storage (older Kindles)?
+3. Is there a way to use libmtp with persistent connection?
+4. Check if `go-mtpfs` or other tools work on macOS
+
+**Blocked: DeDRM KFX Decryption**
+
+The DeDRM plugin has a bug when processing KFX files:
+```
+UnboundLocalError: cannot access local variable 'ex' where it is not associated with a value
+```
+This is in `ion.py` line 1368. May need DeDRM plugin update or workaround.
+
+### Pipeline Status
+
+```
+Kindle Device ──?──▶ source/kindle/{SERIAL}/ ──▶ Calibre ──▶ Extract ──▶ Index
+                 ^
+                 └── THIS STEP NEEDS PROGRAMMATIC SOLUTION
+```
+
+### Files Modified This Session
+
+```
+src/librarian/ingest.py     # Added kindle_sync_main, Kindle source detection
+config/settings.yaml        # Added kindle_serial config
+```
+
+### To Resume
+
+1. Investigate how to programmatically copy from Kindle via MTP on macOS
+2. Fix or work around DeDRM KFX decryption bug
+3. Test full pipeline once books are decrypted
 
 ---
 
