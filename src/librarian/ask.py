@@ -93,17 +93,31 @@ def ask(
         title = node.metadata.get("title", "Unknown")
         page = node.metadata.get("page")
         library_name = node.metadata.get("library", "")
+        result_type = node.metadata.get("_result_type", "text")
+        is_equation = result_type == "equation"
+
+        # For equations, use context_window; for text, use node.text
+        if is_equation:
+            raw_text = node.metadata.get("context_window", node.text)
+        else:
+            raw_text = node.text
 
         # Clean text for context
-        text = clean_text_for_display(node.text)[:800]
+        text = clean_text_for_display(raw_text)[:800]
 
-        page_str = f"p. {page}" if page else "page unknown"
-        context_parts.append(f"[{i}] ({page_str}):\n{text}")
-
-        # Build citation with quote
-        quote = text[:200].replace("\n", " ").strip()
-        if len(text) > 200:
-            quote += "..."
+        # Format differently for equations
+        if is_equation:
+            latex = node.metadata.get("latex", "")
+            eq_num = node.metadata.get("equation_number", "")
+            eq_label = f"Equation {eq_num}" if eq_num else "Equation"
+            context_parts.append(f"[{i}] {eq_label} from {title}:\n$${latex}$$\n\nContext: {text}")
+            quote = f"$${latex[:100]}$$" if latex else text[:200]
+        else:
+            page_str = f"p. {page}" if page else "page unknown"
+            context_parts.append(f"[{i}] ({page_str}):\n{text}")
+            quote = text[:200].replace("\n", " ").strip()
+            if len(text) > 200:
+                quote += "..."
 
         citations.append({
             "num": i,
@@ -112,6 +126,8 @@ def ask(
             "library": library_name,
             "quote": quote,
             "score": node.score,
+            "is_equation": is_equation,
+            "latex": node.metadata.get("latex", "") if is_equation else None,
         })
 
     context = "\n\n---\n\n".join(context_parts)
@@ -155,10 +171,19 @@ def format_response(result: dict) -> str:
     lines.append("=" * 70)
 
     for c in result["citations"]:
-        page_str = f"p. {c['page']}" if c["page"] else "page unknown"
-        lib_str = f" [{c['library']}]" if c["library"] else ""
-        lines.append(f"\n[{c['num']}] {c['title']}{lib_str}, {page_str}")
-        lines.append(f'    "{c["quote"]}"')
+        is_eq = c.get("is_equation", False)
+        lib_str = f" [{c['library']}]" if c.get("library") else ""
+
+        if is_eq:
+            # Format equation reference
+            lines.append(f"\n[{c['num']}] EQUATION from {c['title']}{lib_str}")
+            if c.get("latex"):
+                lines.append(f"    $${c['latex'][:100]}{'...' if len(c.get('latex', '')) > 100 else ''}$$")
+        else:
+            # Format text reference
+            page_str = f"p. {c['page']}" if c.get("page") else "page unknown"
+            lines.append(f"\n[{c['num']}] {c['title']}{lib_str}, {page_str}")
+            lines.append(f'    "{c["quote"]}"')
 
     return "\n".join(lines)
 

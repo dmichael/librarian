@@ -1,6 +1,14 @@
-"""Query the Librarian vector store."""
+"""Query the Librarian vector store with dual collection support.
+
+Queries both:
+1. librarian_full - text chunks from documents
+2. librarian_equations - extracted mathematical equations
+
+Results are merged and ranked by relevance score.
+"""
 
 import sys
+from dataclasses import dataclass
 
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
@@ -9,6 +17,19 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
 from librarian.config import expand_path, load_config
+
+
+@dataclass
+class RetrievalResult:
+    """Unified result from either text or equation collection."""
+    text: str
+    score: float
+    metadata: dict
+    result_type: str  # "text" or "equation"
+
+    @property
+    def is_equation(self) -> bool:
+        return self.result_type == "equation"
 
 
 def setup_retriever(
@@ -93,29 +114,185 @@ def setup_retriever(
     return index.as_retriever(similarity_top_k=top_k, filters=filters)
 
 
+def setup_equation_retriever(config: dict, client: QdrantClient, top_k: int = 3):
+    """Set up retriever for the equation collection.
+
+    Args:
+        config: Application configuration
+        client: Existing Qdrant client (reuse connection)
+        top_k: Number of equations to retrieve
+    """
+    vs_config = config.get("vector_store", {})
+    collection = vs_config.get("equation_collection", "librarian_equations")
+
+    # Check if collection exists
+    try:
+        collections = client.get_collections().collections
+        if not any(c.name == collection for c in collections):
+            return None
+    except Exception:
+        return None
+
+    vector_store = QdrantVectorStore(client=client, collection_name=collection)
+    index = VectorStoreIndex.from_vector_store(vector_store)
+
+    return index.as_retriever(similarity_top_k=top_k)
+
+
 def retrieve(
     query_text: str,
     config: dict | None = None,
     top_k: int = 5,
     subjects: list[str] | None = None,
     library: str | None = None,
+    include_equations: bool = True,
+    equation_top_k: int = 3,
 ):
-    """Run a retrieval query and return matching nodes.
+    """Run a retrieval query across text and equation collections.
 
     Args:
         query_text: The search query
         config: Optional config (loads default if not provided)
-        top_k: Number of results to retrieve
+        top_k: Number of text results to retrieve
         subjects: Optional subject filters (e.g., ["psychology/*", "self-help/*"])
         library: Optional library to restrict search to (e.g., "therapy")
+        include_equations: Whether to also search equation collection
+        equation_top_k: Number of equations to retrieve
+
+    Returns:
+        List of nodes (text chunks and/or equations) sorted by score
     """
     if config is None:
         config = load_config()
 
-    retriever = setup_retriever(config, top_k=top_k, subjects=subjects, library=library)
-    nodes = retriever.retrieve(query_text)
+    # Setup shared Qdrant client
+    vs_config = config.get("vector_store", {})
+    path = expand_path(vs_config.get("path", "~/data/librarian/qdrant"))
+    client = QdrantClient(path=str(path))
 
-    return nodes
+    # Setup embedding model (shared)
+    embedding_config = config.get("embedding", {})
+    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
+    device = embedding_config.get("device", "cpu")
+
+    if "bge" in model_name.lower():
+        embed_model = HuggingFaceEmbedding(
+            model_name=model_name,
+            device=device,
+            query_instruction="Represent this sentence for searching relevant passages: ",
+        )
+    else:
+        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
+
+    Settings.embed_model = embed_model
+
+    # Get text chunks
+    collection = vs_config.get("collection", "librarian_full")
+    text_store = QdrantVectorStore(client=client, collection_name=collection)
+    text_index = VectorStoreIndex.from_vector_store(text_store)
+
+    # Build filters
+    filters = _build_filters(subjects, library)
+    text_retriever = text_index.as_retriever(similarity_top_k=top_k, filters=filters)
+    text_nodes = text_retriever.retrieve(query_text)
+
+    # Mark text nodes
+    for node in text_nodes:
+        node.metadata["_result_type"] = "text"
+
+    if not include_equations:
+        return text_nodes
+
+    # Get equations from separate collection (same client)
+    eq_retriever = setup_equation_retriever(config, client, top_k=equation_top_k)
+
+    if eq_retriever:
+        eq_nodes = eq_retriever.retrieve(query_text)
+        # Mark equation nodes (context_window available in metadata for display)
+        for node in eq_nodes:
+            node.metadata["_result_type"] = "equation"
+    else:
+        eq_nodes = []
+
+    # Merge and sort by score
+    all_nodes = text_nodes + eq_nodes
+    all_nodes.sort(key=lambda n: n.score, reverse=True)
+
+    return all_nodes
+
+
+def _build_filters(subjects: list[str] | None, library: str | None):
+    """Build metadata filters for retrieval."""
+    filter_list = []
+
+    if library:
+        filter_list.append(
+            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
+        )
+
+    if subjects:
+        subject_filters = []
+        for subj in subjects:
+            if subj.endswith("/*"):
+                prefix = subj[:-2]
+                subject_filters.append(
+                    MetadataFilter(key="subjects", value=prefix, operator=FilterOperator.TEXT_MATCH)
+                )
+            else:
+                subject_filters.append(
+                    MetadataFilter(key="subjects", value=subj, operator=FilterOperator.TEXT_MATCH)
+                )
+        if library and subject_filters:
+            filter_list.append(MetadataFilters(filters=subject_filters, condition="or"))
+            return MetadataFilters(filters=filter_list, condition="and")
+        elif subject_filters:
+            return MetadataFilters(filters=subject_filters, condition="or")
+
+    if filter_list:
+        return MetadataFilters(filters=filter_list, condition="and")
+
+    return None
+
+
+def retrieve_equations_only(
+    query_text: str,
+    config: dict | None = None,
+    top_k: int = 10,
+) -> list:
+    """Retrieve only from the equation collection.
+
+    Useful for queries like "list all differential equations" or
+    "find equations related to oscillators".
+    """
+    if config is None:
+        config = load_config()
+
+    vs_config = config.get("vector_store", {})
+    path = expand_path(vs_config.get("path", "~/data/librarian/qdrant"))
+
+    # Setup embedding model
+    embedding_config = config.get("embedding", {})
+    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
+    device = embedding_config.get("device", "cpu")
+
+    if "bge" in model_name.lower():
+        embed_model = HuggingFaceEmbedding(
+            model_name=model_name,
+            device=device,
+            query_instruction="Represent this sentence for searching relevant passages: ",
+        )
+    else:
+        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
+
+    Settings.embed_model = embed_model
+
+    client = QdrantClient(path=str(path))
+    eq_retriever = setup_equation_retriever(config, client, top_k=top_k)
+
+    if not eq_retriever:
+        return []
+
+    return eq_retriever.retrieve(query_text)
 
 
 def main():
