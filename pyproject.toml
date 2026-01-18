@@ -27,6 +27,8 @@ librarian-classify = "librarian.classify:main"
 librarian-index = "librarian.index:main"
 librarian-query = "librarian.query:main"
 librarian-ask = "librarian.ask:main"
+librarian-kindle-extract = "librarian.kindle_extract:main"
+librarian-status = "librarian.state:status_main"
 
 [build-system]
 requires = ["hatchling"]

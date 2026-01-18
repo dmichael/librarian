@@ -1,12 +1,46 @@
 """Index extracted books into Qdrant vector store."""
 
+import fcntl
 import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+from pylatexenc.latex2text import LatexNodes2Text
+
+# Shared LaTeX to text converter
+_latex_converter = LatexNodes2Text()
+
+
+def augment_latex_equations(text: str) -> str:
+    """Augment LaTeX equations with searchable natural language.
+
+    Uses pylatexenc to convert LaTeX to unicode text, then adds
+    a bracketed description after each equation to improve
+    vector search retrieval for mathematical content.
+    """
+    def augment_match(match: re.Match) -> str:
+        latex = match.group(1)
+        try:
+            description = _latex_converter.latex_to_text(latex)
+            # Clean up whitespace
+            description = re.sub(r"\s+", " ", description).strip()
+            if description:
+                return f"{match.group(0)}\n[Mathematical equation: {description}]"
+        except Exception:
+            pass  # If conversion fails, just return original
+        return match.group(0)
+
+    # Match display equations $$...$$
+    augmented = re.sub(r"\$\$(.+?)\$\$", augment_match, text, flags=re.DOTALL)
+    return augmented
+
 from llama_index.core import Document, Settings, StorageContext, VectorStoreIndex
+
+# Lock for serializing Qdrant access (local storage doesn't support concurrent clients)
+QDRANT_LOCK = Path("/tmp/librarian-qdrant.lock")
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -27,17 +61,38 @@ def extract_page_number(text: str) -> int | None:
     return None
 
 
-def get_calibre_metadata(library_path: Path) -> dict[int, dict]:
-    """Get book metadata from Calibre for all books."""
+def get_calibre_metadata(library_path: Path, max_retries: int = 3) -> dict[int, dict]:
+    """Get book metadata from Calibre for all books.
+
+    Retries with exponential backoff if Calibre database is locked.
+    Calibre uses SQLite which doesn't allow concurrent writers - when multiple
+    librarian-index processes start simultaneously (e.g., via make -j),
+    calibredb calls can collide. The retry handles this transient contention.
+    """
     cmd = [
         "calibredb", "list",
         "--library-path", str(library_path),
         "--fields", "id,title,authors,tags,publisher,pubdate,*subjects,*library",
         "--for-machine",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+
+    for attempt in range(max_retries):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            break
+
+        # Check if it's a lock contention error (retryable)
+        if "Another calibre program" in result.stderr:
+            delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+            print(f"Calibre busy, retrying in {delay}s...", file=sys.stderr)
+            time.sleep(delay)
+            continue
+
+        # Non-retryable error
         print(f"Error querying Calibre: {result.stderr}", file=sys.stderr)
+        return {}
+    else:
+        print(f"Calibre unavailable after {max_retries} retries", file=sys.stderr)
         return {}
 
     books = json.loads(result.stdout)
@@ -56,11 +111,16 @@ def get_calibre_metadata(library_path: Path) -> dict[int, dict]:
 
 
 def load_extracted_book(book_dir: Path) -> str | None:
-    """Load the extracted markdown for a book."""
+    """Load the extracted markdown for a book.
+
+    Augments LaTeX equations with natural language descriptions
+    to improve vector search retrieval.
+    """
     full_md = book_dir / "full.md"
     if not full_md.exists():
         return None
-    return full_md.read_text()
+    content = full_md.read_text()
+    return augment_latex_equations(content)
 
 
 def create_documents(
@@ -249,6 +309,17 @@ def main():
     embed_model = setup_embedding_model(config)
     Settings.embed_model = embed_model
 
+    # Serialize Qdrant access - local storage doesn't support concurrent clients
+    with open(QDRANT_LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            _run_indexing(args, config, calibre_metadata, output_path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path: Path):
+    """Run the indexing pipeline (called with Qdrant lock held)."""
     # Set up vector store
     client, vector_store = setup_vector_store(config)
 

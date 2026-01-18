@@ -1,8 +1,11 @@
 """Extract content from Calibre library to markdown."""
 
+import fcntl
 import hashlib
+import os
 import subprocess
 import sys
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -15,21 +18,41 @@ from librarian.config import expand_path, load_config
 TOOL_VERSION = "marker-0.1.0"  # Update when extraction tools change
 
 
-def get_calibre_books(library_path: Path) -> list[dict]:
-    """Query Calibre for all books with their metadata."""
+def get_calibre_books(library_path: Path, max_retries: int = 3) -> list[dict]:
+    """Query Calibre for all books with their metadata.
+
+    Retries with exponential backoff if Calibre database is locked.
+    Calibre uses SQLite which doesn't allow concurrent writers - when multiple
+    librarian-extract processes start simultaneously (e.g., via make -j),
+    calibredb calls can collide. The retry handles this transient contention.
+    """
+    import json
+
     cmd = [
         "calibredb", "list",
         "--library-path", str(library_path),
         "--fields", "id,title,formats,*source_hash",
         "--for-machine",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+
+    for attempt in range(max_retries):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+
+        # Check if it's a lock contention error (retryable)
+        if "Another calibre program" in result.stderr:
+            delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+            print(f"Calibre busy, retrying in {delay}s...", file=sys.stderr)
+            time.sleep(delay)
+            continue
+
+        # Non-retryable error
         print(f"Error querying Calibre: {result.stderr}", file=sys.stderr)
         return []
 
-    import json
-    return json.loads(result.stdout)
+    print(f"Calibre unavailable after {max_retries} retries", file=sys.stderr)
+    return []
 
 
 def compute_file_hash(file_path: Path) -> str:
@@ -45,6 +68,39 @@ def compute_file_hash(file_path: Path) -> str:
 DIRECT_FORMATS = [".epub", ".pdf"]
 # Formats that need conversion to EPUB first
 KINDLE_FORMATS = [".azw3", ".azw", ".mobi", ".kfx"]
+
+# Lock for serializing marker_single calls (surya crashes with concurrent MPS access)
+MARKER_LOCK = Path("/tmp/librarian-marker.lock")
+LOCK_STALE_SECONDS = 3600  # Consider lock stale after 1 hour
+
+
+def _is_lock_stale(lock_path: Path) -> bool:
+    """Check if lock file is stale (holder crashed)."""
+    if not lock_path.exists():
+        return False
+    try:
+        mtime = lock_path.stat().st_mtime
+        if time.time() - mtime > LOCK_STALE_SECONDS:
+            return True
+        # Try non-blocking lock to see if it's held
+        with open(lock_path, "w") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return True  # Lock was free = previous holder crashed
+            except BlockingIOError:
+                return False  # Lock is actively held
+    except (OSError, IOError):
+        return True  # Can't check = assume stale
+
+
+def _clear_stale_lock(lock_path: Path):
+    """Remove stale lock file."""
+    try:
+        lock_path.unlink()
+        print(f"Cleared stale lock: {lock_path}")
+    except FileNotFoundError:
+        pass
 
 
 def get_source_file(book: dict) -> tuple[Path | None, bool]:
@@ -124,17 +180,51 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
     return False
 
 
+def find_marker_single() -> str:
+    """Find marker_single executable, checking venv first."""
+    import shutil
+
+    # Check if marker_single is in PATH
+    marker = shutil.which("marker_single")
+    if marker:
+        return marker
+
+    # Check in the same venv as this script
+    venv_bin = Path(sys.executable).parent
+    marker_in_venv = venv_bin / "marker_single"
+    if marker_in_venv.exists():
+        return str(marker_in_venv)
+
+    return "marker_single"  # Fall back to PATH lookup
+
+
 def extract_pdf(source: Path, output_dir: Path) -> bool:
-    """Extract PDF to markdown using Marker."""
+    """Extract PDF to markdown using Marker (serialized via lock)."""
     try:
+        marker_cmd = find_marker_single()
         cmd = [
-            "marker_single",
+            marker_cmd,
             str(source),
             "--output_dir", str(output_dir),
             "--output_format", "markdown",
         ]
-        # Stream output instead of capturing - marker shows progress on stderr
-        result = subprocess.run(cmd)
+
+        # Clear stale lock if previous process crashed
+        if _is_lock_stale(MARKER_LOCK):
+            _clear_stale_lock(MARKER_LOCK)
+
+        # Serialize marker_single - surya crashes with concurrent MPS access
+        with open(MARKER_LOCK, "w") as lock:
+            lock.write(f"{os.getpid()}\n")
+            lock.flush()
+
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                # Run marker directly - let it inherit stdout/stderr for tqdm progress bars
+                result = subprocess.run(cmd)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
         if result.returncode != 0:
             print(f"marker_single failed with exit code {result.returncode}", file=sys.stderr)
             return False
@@ -249,7 +339,7 @@ def extract_book(book: dict, source_file: Path, output_dir: Path, needs_conversi
 
     # Handle Kindle formats by converting to EPUB first
     if needs_conversion or suffix in KINDLE_FORMATS:
-        print(f"  Converting {suffix} to EPUB...")
+        print(f"  Converting {suffix} to EPUB...", flush=True)
         epub_path = convert_to_epub(source_file, book_output)
         if epub_path is None:
             return False
@@ -327,24 +417,24 @@ def main():
 
         source_file, needs_conversion = get_source_file(book)
         if not source_file or not source_file.exists():
-            print(f"[{book_id}] {title}: No source file found, skipping")
+            print(f"[{book_id}] {title}: No source file found, skipping", flush=True)
             continue
 
         if not args["force"] and not needs_extraction(book, source_file, output_path):
-            print(f"[{book_id}] {title}: Already extracted, skipping")
+            print(f"[{book_id}] {title}: Already extracted, skipping", flush=True)
             continue
 
         if args["dry_run"]:
             fmt_note = f" (convert to EPUB)" if needs_conversion else ""
-            print(f"[{book_id}] {title}: Would extract from {source_file.suffix}{fmt_note}")
+            print(f"[{book_id}] {title}: Would extract from {source_file.suffix}{fmt_note}", flush=True)
             continue
 
-        print(f"[{book_id}] {title}: Extracting...")
+        print(f"[{book_id}] {title}: Extracting...", flush=True)
 
         if extract_book(book, source_file, output_path, needs_conversion):
             source_hash = compute_file_hash(source_file)
             update_calibre_extraction_state(library_path, book_id, source_hash)
-            print(f"[{book_id}] {title}: Done")
+            print(f"[{book_id}] {title}: Done", flush=True)
         else:
             print(f"[{book_id}] {title}: Extraction failed", file=sys.stderr)
 
