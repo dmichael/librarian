@@ -1,108 +1,37 @@
-"""Ingest books from source paths into Calibre library."""
+"""Legacy ingest module - DEPRECATED.
 
-import re
+Use librarian-intake instead, which provides unified intake for:
+- PDFs/EPUBs from intake/ebooks/
+- Kindle files from intake/kindle/{serial}/
+- Kindle for Mac books
+
+This module is kept for backward compatibility only.
+"""
+
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
 
-# Pattern for Kindle ASIN folders (B followed by alphanumeric, or hex string)
-ASIN_PATTERN = re.compile(r'^B[A-Z0-9]{9}$|^[A-F0-9]{32}$')
-
-
-def is_kindle_source(source: Path) -> bool:
-    """Detect if source is a Kindle library folder."""
-    # Check path for Kindle app identifier
-    if "com.amazon.Lassen" in str(source):
-        return True
-    # Check for ASIN-named subfolders
-    for child in source.iterdir():
-        if child.is_dir() and ASIN_PATTERN.match(child.name):
-            return True
-    return False
-
-
-def find_kindle_books(source: Path) -> list[Path]:
-    """Find book content folders in Kindle library."""
-    books = []
-    for asin_dir in source.iterdir():
-        if not asin_dir.is_dir():
-            continue
-        # Skip samples, plugins, and non-book folders
-        if asin_dir.name.endswith("-sample"):
-            continue
-        if asin_dir.name.startswith("com."):
-            continue
-        if not ASIN_PATTERN.match(asin_dir.name):
-            continue
-
-        # Find the UUID subfolder containing book content
-        for uuid_dir in asin_dir.iterdir():
-            if not uuid_dir.is_dir():
-                continue
-            # Check for KFX manifest (downloaded book)
-            if (uuid_dir / "BookManifest.kfx").exists():
-                books.append(uuid_dir)
-                break
-            # Check for AZW files
-            if list(uuid_dir.glob("*.azw*")):
-                books.append(uuid_dir)
-                break
-    return books
-
-
-def add_to_calibre(path: Path, library: Path, dry_run: bool = False) -> bool:
-    """Add a single book or folder to Calibre."""
-    cmd = [
-        "calibredb", "add",
-        "--library-path", str(library),
-        "--automerge", "ignore",
-        str(path),
-    ]
-
-    if dry_run:
-        print(f"  Would add: {path.name}")
-        return True
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode == 0:
-        # Check if book was actually added (not duplicate)
-        if "Added" in result.stdout:
-            return True
-    return False
-
-
-def ingest_kindle(source: Path, library: Path, dry_run: bool = False) -> None:
-    """Ingest books from Kindle library."""
-    print(f"Scanning Kindle library: {source}")
-    books = find_kindle_books(source)
-    print(f"Found {len(books)} downloaded books")
-
-    added = 0
-    for book_path in books:
-        asin = book_path.parent.name
-        if add_to_calibre(book_path, library, dry_run):
-            added += 1
-            if not dry_run:
-                print(f"  Added: {asin}")
-
-    print(f"Ingested {added} new books from Kindle")
-
 
 def ingest(source: Path, library: Path, dry_run: bool = False) -> None:
-    """Add books from source path to Calibre library."""
+    """Add books from source path to Calibre library.
+
+    DEPRECATED: Use librarian-intake instead.
+    """
+    warnings.warn(
+        "ingest() is deprecated. Use librarian-intake for unified intake.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     if not source.exists():
         print(f"Source path does not exist: {source}")
         return
 
-    # Handle Kindle sources specially
-    if is_kindle_source(source):
-        ingest_kindle(source, library, dry_run)
-        return
-
-    # Standard recursive add for regular sources
+    # Standard recursive add for regular sources (PDFs, EPUBs)
     cmd = [
         "calibredb", "add",
         "--library-path", str(library),
@@ -143,9 +72,11 @@ def kindle_sync_main():
         print("Add: kindle_serial: YOUR_KINDLE_SERIAL")
         sys.exit(1)
 
-    # Base kindle directory (serial subfolder created automatically)
-    kindle_base = expand_path("~/data/librarian/source/kindle")
-    sync_target = kindle_base / serial
+    # Use kindle_intake_path if configured, fallback to kindle_source_path
+    kindle_base = config.get("kindle_intake_path") or config.get(
+        "kindle_source_path", "~/data/librarian/kindle"
+    )
+    sync_target = expand_path(kindle_base) / serial
     sync_target.mkdir(parents=True, exist_ok=True)
 
     if show_path_only:
@@ -190,7 +121,18 @@ def kindle_sync_main():
 
 
 def main():
-    """CLI entry point for ingest command."""
+    """CLI entry point for ingest command.
+
+    DEPRECATED: Use librarian-intake instead for unified intake.
+    This command only handles PDFs/EPUBs. The new librarian-intake
+    handles all formats including Kindle.
+    """
+    print("=" * 60)
+    print("NOTICE: librarian-ingest is deprecated.")
+    print("Use 'librarian-intake' for unified intake of all formats.")
+    print("=" * 60)
+    print()
+
     dry_run = "--dry-run" in sys.argv
 
     config = load_config()
@@ -198,11 +140,21 @@ def main():
 
     if not library.exists():
         print(f"Library path does not exist: {library}")
-        print("Run: calibredb --library-path=... add <first-book> to initialize")
+        print("Run: librarian-init to initialize the pipeline")
         sys.exit(1)
 
-    for source in config["source_paths"]:
-        ingest(expand_path(source), library, dry_run)
+    # Ingest from intake/ebooks/ only
+    intake_path = config.get("intake_path")
+    if intake_path:
+        path = expand_path(intake_path)
+        if path.exists():
+            ingest(path, library, dry_run)
+        else:
+            print(f"Intake path does not exist: {path}")
+            print("Create it with: mkdir -p ~/data/librarian/intake/ebooks")
+    else:
+        print("No intake_path configured in settings.yaml")
+        print("Use: librarian-intake for unified intake")
 
 
 if __name__ == "__main__":

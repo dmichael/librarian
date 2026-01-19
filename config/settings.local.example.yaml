@@ -1,0 +1,29 @@
+# Local overrides for this machine.
+#
+# `src/librarian/config.py` loads this file in preference to `config/settings.yaml`.
+# Keep this file uncommitted by copying it to `config/settings.local.yaml`.
+
+library_path: ~/data/librarian/calibre
+output_path: ~/data/librarian/converted
+
+source_paths:
+  - ~/data/librarian/source
+
+embedding:
+  model: BAAI/bge-base-en-v1.5
+  device: mps
+
+vector_store:
+  type: qdrant
+  path: ~/data/librarian/qdrant
+  collection: librarian_full
+
+chunking:
+  chunk_size: 512
+  chunk_overlap: 50
+
+classification:
+  provider: ollama
+  model: llama3.2
+  sample_size: 5000
+

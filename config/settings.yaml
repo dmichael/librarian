@@ -3,9 +3,20 @@
 library_path: ~/data/librarian/calibre
 output_path: ~/data/librarian/converted
 
-source_paths:
-  - ~/data/librarian/source
-  - ~/Library/Containers/com.amazon.Lassen/Data/Library/eBooks  # Kindle for Mac
+# Intake directories (unified via librarian-intake)
+intake_path: ~/data/librarian/intake/ebooks     # Drop zone for PDFs/EPUBs
+kindle_intake_path: ~/data/librarian/intake/kindle  # Synced from Kindle device
+
+# Pipeline state tracked in Calibre custom columns:
+# - *status: imported, drm_failed, extracted, indexed
+# - *format_type: pdf, epub, kindle
+# - *drm_status: none, stripped, requires_manual
+# - *drm_diagnosis: JSON with failure details
+
+# Legacy paths (deprecated)
+# Note: Kindle for Mac is now handled by librarian-kindle-extract, not source_paths
+# source_paths:
+#   - ~/data/librarian/source
 
 # Embedding configuration
 embedding:
@@ -16,17 +27,34 @@ embedding:
 
 # Vector store configuration
 vector_store:
-  type: qdrant
-  path: ~/data/librarian/qdrant  # Local Qdrant storage
+  # Backend: qdrant-file (default), qdrant-server, lancedb, or chroma
+  backend: chroma
+
+  # Each backend stores data in its own directory
+  qdrant_path: ~/data/librarian/vectorstore/qdrant
+  lancedb_path: ~/data/librarian/vectorstore/lancedb
+  chroma_path: ~/data/librarian/vectorstore/chroma
+
+  # Qdrant server (production) - multi-tenant, no locking needed
+  # backend: qdrant-server
+  # host: localhost
+  # port: 6333
+  # api_key: optional
+  # https: false
+
+  # Collection names (shared across all backends)
   collection: librarian_full
+  equation_collection: librarian_equations
+  chapter_collection: librarian_chapters
 
 # Chunking configuration
 chunking:
   chunk_size: 512  # tokens
   chunk_overlap: 50  # tokens
 
-# Kindle device serial (needed for DRM decryption, MTP doesn't expose it)
-kindle_serial: GR73H30154540QV4
+# Kindle configuration
+kindle_serial: GR73H30154540QV4  # Device serial for DRM decryption
+captures_path: ~/data/librarian/intake/captures  # Screenshots for manual OCR workflow
 
 # Classification LLM configuration
 classification:

@@ -18,17 +18,38 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]  # For Claude classification
+lancedb = [
+    "llama-index-vector-stores-lancedb>=0.4.0",
+    "lancedb>=0.5.0",
+    "pandas>=2.0.0",  # Required by llama-index-vector-stores-lancedb
+]  # Alternative vector store backend
+chroma = [
+    "chromadb>=0.4.0",
+    "llama-index-vector-stores-chroma>=0.5.0",
+]  # Alternative vector store backend
 
 [project.scripts]
-librarian-ingest = "librarian.ingest:main"
-librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
+# Main commands
+librarian-pipeline = "librarian.intake:pipeline_main"
+librarian-init = "librarian.intake:init_main"
+librarian-intake = "librarian.intake:intake_main"
 librarian-extract = "librarian.extract:main"
-librarian-classify = "librarian.classify:main"
 librarian-index = "librarian.index:main"
+librarian-status = "librarian.calibre:status_main"
+# Query and search
 librarian-query = "librarian.query:main"
 librarian-ask = "librarian.ask:main"
+librarian-read = "librarian.read:main"
+# Utilities
+librarian-classify = "librarian.classify:main"
+librarian-enrich = "librarian.enrich:main"
+librarian-benchmark = "librarian.benchmark:main"
+librarian-stats = "librarian.stats:main"
+librarian-toc = "librarian.stats:toc_main"
+# Legacy (deprecated)
+librarian-ingest = "librarian.ingest:main"
+librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
 librarian-kindle-extract = "librarian.kindle_extract:main"
-librarian-status = "librarian.state:status_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -39,6 +60,9 @@ packages = ["src/librarian"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests (require indexed data)",
+]
 
 [tool.ruff]
 line-length = 100

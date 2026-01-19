@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from librarian.config import expand_path, load_config
+from librarian.files import find_markdown
 
 
 def load_taxonomy() -> dict:
@@ -33,11 +34,11 @@ def get_taxonomy_prompt(taxonomy: dict) -> str:
 
 def sample_book_content(book_dir: Path, sample_size: int = 5000) -> str:
     """Get a representative sample of book content."""
-    full_md = book_dir / "full.md"
-    if not full_md.exists():
+    md_file = find_markdown(book_dir)
+    if not md_file:
         return ""
 
-    content = full_md.read_text()
+    content = md_file.read_text()
 
     # Sample from beginning (title, TOC), middle, and end
     total_len = len(content)

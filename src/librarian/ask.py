@@ -96,6 +96,12 @@ def ask(
         result_type = node.metadata.get("_result_type", "text")
         is_equation = result_type == "equation"
 
+        # Get hierarchical context
+        breadcrumb = node.metadata.get("breadcrumb", "")
+        chapter_num = node.metadata.get("chapter_num")
+        chapter_title = node.metadata.get("chapter_title", "")
+        section_title = node.metadata.get("section_title", "")
+
         # For equations, use context_window; for text, use node.text
         if is_equation:
             raw_text = node.metadata.get("context_window", node.text)
@@ -113,11 +119,24 @@ def ask(
             context_parts.append(f"[{i}] {eq_label} from {title}:\n$${latex}$$\n\nContext: {text}")
             quote = f"$${latex[:100]}$$" if latex else text[:200]
         else:
-            page_str = f"p. {page}" if page else "page unknown"
-            context_parts.append(f"[{i}] ({page_str}):\n{text}")
+            # Include breadcrumb in context for better LLM understanding
+            location = breadcrumb if breadcrumb else (f"p. {page}" if page else "")
+            if location:
+                context_parts.append(f"[{i}] ({location}):\n{text}")
+            else:
+                context_parts.append(f"[{i}]:\n{text}")
             quote = text[:200].replace("\n", " ").strip()
             if len(text) > 200:
                 quote += "..."
+
+        # Build PDF link with page anchor
+        source_path = node.metadata.get("source_path", "")
+        if source_path and page:
+            pdf_link = f"file://{source_path}#page={page}"
+        elif source_path:
+            pdf_link = f"file://{source_path}"
+        else:
+            pdf_link = None
 
         citations.append({
             "num": i,
@@ -128,6 +147,12 @@ def ask(
             "score": node.score,
             "is_equation": is_equation,
             "latex": node.metadata.get("latex", "") if is_equation else None,
+            "breadcrumb": breadcrumb,
+            "chapter_num": chapter_num,
+            "chapter_title": chapter_title,
+            "section_title": section_title,
+            "source_path": source_path,
+            "pdf_link": pdf_link,
         })
 
     context = "\n\n---\n\n".join(context_parts)
@@ -180,9 +205,23 @@ def format_response(result: dict) -> str:
             if c.get("latex"):
                 lines.append(f"    $${c['latex'][:100]}{'...' if len(c.get('latex', '')) > 100 else ''}$$")
         else:
-            # Format text reference
-            page_str = f"p. {c['page']}" if c.get("page") else "page unknown"
-            lines.append(f"\n[{c['num']}] {c['title']}{lib_str}, {page_str}")
+            # Format text reference with breadcrumb
+            breadcrumb = c.get("breadcrumb", "")
+            page_str = f"p. {c['page']}" if c.get("page") else ""
+            pdf_link = c.get("pdf_link", "")
+
+            # Build location string: prefer breadcrumb, fall back to page
+            if breadcrumb:
+                location = breadcrumb
+                if page_str:
+                    location = f"{location} ({page_str})"
+            else:
+                location = page_str if page_str else "location unknown"
+
+            lines.append(f"\n[{c['num']}] {c['title']}{lib_str}")
+            lines.append(f"    {location}")
+            if pdf_link:
+                lines.append(f"    {pdf_link}")
             lines.append(f'    "{c["quote"]}"')
 
     return "\n".join(lines)

@@ -45,14 +45,22 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
 
 from librarian.config import expand_path, load_config
+from librarian.files import find_content_json, find_markdown
+from librarian import calibre
+from librarian.vectorstore import get_vector_store, get_collection_names
 from librarian.equations import (
     ExtractedEquation,
     extract_equations,
+    extract_equations_from_blocks,
     prepare_equation_documents,
     EquationAwareChunker,
+)
+from librarian.structure import (
+    DocumentStructure,
+    parse_structure,
+    get_context_for_page,
 )
 
 
@@ -71,14 +79,11 @@ def get_calibre_metadata(library_path: Path, max_retries: int = 3) -> dict[int, 
     """Get book metadata from Calibre for all books.
 
     Retries with exponential backoff if Calibre database is locked.
-    Calibre uses SQLite which doesn't allow concurrent writers - when multiple
-    librarian-index processes start simultaneously (e.g., via make -j),
-    calibredb calls can collide. The retry handles this transient contention.
     """
     cmd = [
         "calibredb", "list",
         "--library-path", str(library_path),
-        "--fields", "id,title,authors,tags,publisher,pubdate,*subjects,*library",
+        "--fields", "id,title,authors,tags,publisher,pubdate,*subjects,*status,formats",
         "--for-machine",
     ]
 
@@ -113,6 +118,17 @@ def get_calibre_metadata(library_path: Path, max_retries: int = 3) -> dict[int, 
         else:
             book["subjects"] = []
 
+        # Get best source file path (prefer PDF for page linking)
+        formats = book.get("formats", [])
+        source_path = None
+        for fmt in formats:
+            if fmt.lower().endswith(".pdf"):
+                source_path = fmt
+                break
+        if not source_path and formats:
+            source_path = formats[0]  # Fallback to first available
+        book["source_path"] = source_path
+
     return {book["id"]: book for book in books}
 
 
@@ -124,12 +140,72 @@ def load_extracted_book(book_dir: Path) -> tuple[str | None, str | None]:
         - augmented_content: LaTeX equations have natural language descriptions
         - raw_content: Original markdown for equation extraction
     """
-    full_md = book_dir / "full.md"
-    if not full_md.exists():
+    md_file = find_markdown(book_dir)
+    if not md_file:
         return None, None
-    raw_content = full_md.read_text()
+    raw_content = md_file.read_text()
     augmented_content = augment_latex_equations(raw_content)
     return augmented_content, raw_content
+
+
+def load_extracted_blocks(book_dir: Path) -> list[dict] | None:
+    """Load structured blocks from marker JSON output.
+
+    Returns list of blocks with text and metadata, or None if not available.
+    Each block contains:
+        - text: Plain text content (converted from HTML)
+        - page: Page number
+        - block_type: SectionHeader, Text, Table, etc.
+        - block_id: Unique identifier
+    """
+    import markdownify
+
+    content_file = find_content_json(book_dir)
+    if not content_file:
+        return None
+
+    with open(content_file) as f:
+        data = json.load(f)
+
+    # Handle both "blocks" and "chunks" keys
+    raw_blocks = data.get("blocks", data.get("chunks", []))
+    if not raw_blocks:
+        return None
+
+    blocks = []
+    for block in raw_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        # Convert HTML to markdown/text
+        html = block.get("html", "")
+        if html:
+            text = markdownify.markdownify(html, heading_style="ATX").strip()
+        else:
+            text = block.get("text", "")
+
+        if not text:
+            continue
+
+        blocks.append({
+            "text": text,
+            "page": block.get("page"),
+            "block_type": block.get("block_type", "Text"),
+            "block_id": block.get("id", ""),
+        })
+
+    return blocks if blocks else None
+
+
+def serialize_list_metadata(value) -> str:
+    """Serialize list metadata to JSON string for backend compatibility.
+
+    LanceDB doesn't support list values in metadata, so we serialize
+    lists to JSON strings. This works with all backends.
+    """
+    if isinstance(value, list):
+        return json.dumps(value)
+    return value
 
 
 def create_documents(
@@ -139,22 +215,93 @@ def create_documents(
 ) -> list[Document]:
     """Create LlamaIndex documents with metadata."""
     # Build metadata for the document
-    # subjects is a list for filtering (e.g., ["psychology/therapy", "self-help/skills-training"])
+    # Lists are serialized to JSON strings for LanceDB compatibility
     subjects = metadata.get("subjects", [])
+    tags = metadata.get("tags", [])
     library = metadata.get("*library", "") or ""
 
     doc_metadata = {
         "book_id": book_id,
         "title": metadata.get("title", "Unknown"),
         "authors": ", ".join(metadata.get("authors", [])),
-        "tags": metadata.get("tags", []),
+        "tags": serialize_list_metadata(tags),
         "publisher": metadata.get("publisher", ""),
-        "subjects": subjects,
+        "subjects": serialize_list_metadata(subjects),
         "library": library,  # Bounded collection for agent access
+        "source_path": metadata.get("source_path", ""),
     }
 
     # Create a single document - chunking happens via node parser
     return [Document(text=content, metadata=doc_metadata)]
+
+
+def create_nodes_from_blocks(
+    blocks: list[dict],
+    book_id: int,
+    metadata: dict,
+    chunk_size: int = 512,
+) -> list[TextNode]:
+    """Create LlamaIndex nodes from marker JSON blocks.
+
+    Each block becomes a node with page number and block type metadata.
+    Large blocks are split to respect chunk_size.
+
+    Args:
+        blocks: List of block dicts from load_extracted_blocks
+        book_id: Calibre book ID
+        metadata: Book metadata from Calibre
+        chunk_size: Max characters per node (large blocks are split)
+
+    Returns:
+        List of TextNode objects ready for indexing
+    """
+    subjects = metadata.get("subjects", [])
+    tags = metadata.get("tags", [])
+    library = metadata.get("*library", "") or ""
+
+    base_metadata = {
+        "book_id": book_id,
+        "title": metadata.get("title", "Unknown"),
+        "authors": ", ".join(metadata.get("authors", [])),
+        "tags": serialize_list_metadata(tags),
+        "publisher": metadata.get("publisher", ""),
+        "subjects": serialize_list_metadata(subjects),
+        "library": library,
+        "source_path": metadata.get("source_path", ""),
+    }
+
+    nodes = []
+    for block in blocks:
+        text = block["text"]
+        page = block.get("page")
+        block_type = block.get("block_type", "Text")
+
+        # Split large blocks
+        if len(text) > chunk_size * 1.5:
+            # Simple split on paragraphs or sentences
+            parts = text.split("\n\n")
+            current_chunk = ""
+            for part in parts:
+                if len(current_chunk) + len(part) > chunk_size and current_chunk:
+                    node_meta = base_metadata.copy()
+                    node_meta["page"] = page
+                    node_meta["block_type"] = block_type
+                    nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
+                    current_chunk = part
+                else:
+                    current_chunk += "\n\n" + part if current_chunk else part
+            if current_chunk.strip():
+                node_meta = base_metadata.copy()
+                node_meta["page"] = page
+                node_meta["block_type"] = block_type
+                nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
+        else:
+            node_meta = base_metadata.copy()
+            node_meta["page"] = page
+            node_meta["block_type"] = block_type
+            nodes.append(TextNode(text=text, metadata=node_meta))
+
+    return nodes
 
 
 def setup_embedding_model(config: dict) -> HuggingFaceEmbedding:
@@ -175,44 +322,183 @@ def setup_embedding_model(config: dict) -> HuggingFaceEmbedding:
     return HuggingFaceEmbedding(model_name=model_name, device=device)
 
 
-def setup_vector_store(config: dict) -> tuple[QdrantClient, QdrantVectorStore]:
-    """Initialize Qdrant client and vector store."""
-    vs_config = config.get("vector_store", {})
-    path = expand_path(vs_config.get("path", "~/data/librarian/qdrant"))
-    collection = vs_config.get("collection", "librarian_full")
-
-    # Ensure directory exists
-    path.mkdir(parents=True, exist_ok=True)
-
-    print(f"Connecting to Qdrant at: {path}")
-
-    # Create client with local persistence
-    client = QdrantClient(path=str(path))
-
-    # Create vector store
-    vector_store = QdrantVectorStore(
-        client=client,
-        collection_name=collection,
-    )
-
-    return client, vector_store
 
 
-def setup_equation_store(config: dict, client: QdrantClient) -> QdrantVectorStore:
-    """Initialize separate vector store for equations.
+def generate_chapter_summary(chapter_text: str, chapter_title: str, config: dict) -> str:
+    """Generate a summary for a chapter using the configured LLM.
 
-    Equations are stored in their own collection to enable:
-    - Targeted equation-specific queries
-    - Different retrieval strategies (e.g., more results)
-    - Separate from text chunks for cleaner results
+    Uses the same LLM provider configured for classification.
     """
-    vs_config = config.get("vector_store", {})
-    collection = vs_config.get("equation_collection", "librarian_equations")
+    import httpx
 
-    return QdrantVectorStore(
-        client=client,
-        collection_name=collection,
+    llm_config = config.get("classification", {})
+    provider = llm_config.get("provider", "ollama")
+    model = llm_config.get("model", "llama3.2")
+
+    # Truncate chapter text if too long (keep first ~4000 chars for summary)
+    max_chars = 4000
+    if len(chapter_text) > max_chars:
+        chapter_text = chapter_text[:max_chars] + "..."
+
+    prompt = f"""Summarize the following chapter in 2-3 sentences. Focus on the main topics and key concepts covered.
+
+Chapter: {chapter_title}
+
+Content:
+{chapter_text}
+
+Summary:"""
+
+    if provider == "anthropic":
+        import os
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            response = client.messages.create(
+                model=model,
+                max_tokens=256,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            print(f"Anthropic summary error: {e}", file=sys.stderr)
+            return ""
+    else:
+        # Ollama
+        try:
+            response = httpx.post(
+                "http://localhost:11434/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            return response.json().get("response", "").strip()
+        except Exception as e:
+            print(f"Ollama summary error: {e}", file=sys.stderr)
+            return ""
+
+
+def extract_chapter_text(content: str, chapter_num: int, structure: DocumentStructure) -> str:
+    """Extract the full text of a chapter from the document.
+
+    Uses page markers and structure to find chapter boundaries.
+    """
+    chapter = structure.get_chapter(chapter_num)
+    if not chapter:
+        return ""
+
+    # Find chapter start pattern
+    start_pattern = re.compile(
+        rf'^#\s+\*{{0,2}}Chapter\s+{chapter_num}\b',
+        re.IGNORECASE | re.MULTILINE
     )
+    start_match = start_pattern.search(content)
+    if not start_match:
+        return ""
+
+    start_pos = start_match.start()
+
+    # Find next chapter or end
+    next_chapter = structure.get_chapter(chapter_num + 1)
+    if next_chapter:
+        next_pattern = re.compile(
+            rf'^#\s+\*{{0,2}}Chapter\s+{chapter_num + 1}\b',
+            re.IGNORECASE | re.MULTILINE
+        )
+        next_match = next_pattern.search(content, start_pos + 1)
+        if next_match:
+            return content[start_pos:next_match.start()]
+
+    # If no next chapter, look for end markers
+    end_patterns = [
+        r'^#\s+\*{0,2}Appendix',
+        r'^#\s+\*{0,2}Index\b',
+        r'^#\s+\*{0,2}Bibliography',
+        r'^#\s+\*{0,2}About the Author',
+    ]
+    for pattern in end_patterns:
+        end_match = re.search(pattern, content[start_pos:], re.IGNORECASE | re.MULTILINE)
+        if end_match:
+            return content[start_pos:start_pos + end_match.start()]
+
+    # Return to end of document
+    return content[start_pos:]
+
+
+def index_chapters(
+    structure: DocumentStructure,
+    content: str,
+    metadata: dict,
+    chapter_store: QdrantVectorStore,
+    config: dict,
+) -> int:
+    """Index chapter summaries to the chapter collection.
+
+    Creates one document per chapter with:
+    - LLM-generated summary as searchable text
+    - Chapter metadata (number, title, page range, section titles)
+    """
+    if not structure.chapters:
+        return 0
+
+    book_id = metadata.get("id", 0)
+    book_title = metadata.get("title", "Unknown")
+
+    nodes = []
+    for chapter in structure.chapters:
+        # Extract chapter text and generate summary
+        chapter_text = extract_chapter_text(content, chapter.number, structure)
+        if not chapter_text:
+            continue
+
+        summary = generate_chapter_summary(chapter_text, chapter.title, config)
+        if not summary:
+            # Fallback: use first paragraph as summary
+            paragraphs = [p.strip() for p in chapter_text.split('\n\n') if p.strip() and not p.startswith('#')]
+            summary = paragraphs[0][:500] if paragraphs else ""
+
+        chapter.summary = summary
+
+        # Build searchable text: summary + section titles for better retrieval
+        section_titles = [s.title for s in chapter.sections]
+        searchable_text = f"{summary}\n\nSections: {', '.join(section_titles)}" if section_titles else summary
+
+        # Build page range string
+        page_range = ""
+        if chapter.page_start:
+            if chapter.page_end:
+                page_range = f"{chapter.page_start}-{chapter.page_end}"
+            else:
+                page_range = f"{chapter.page_start}+"
+
+        node = TextNode(
+            text=searchable_text,
+            metadata={
+                "book_id": book_id,
+                "title": book_title,
+                "chapter_num": chapter.number,
+                "chapter_title": chapter.title,
+                "summary": summary,
+                "page_range": page_range,
+                "section_titles": serialize_list_metadata(section_titles),
+                "subjects": serialize_list_metadata(metadata.get("subjects", [])),
+                "library": metadata.get("*library", "") or "",
+            },
+        )
+        nodes.append(node)
+
+    if not nodes:
+        return 0
+
+    # Index to chapter store
+    storage_context = StorageContext.from_defaults(vector_store=chapter_store)
+    VectorStoreIndex(
+        nodes=nodes,
+        storage_context=storage_context,
+        show_progress=False,
+    )
+
+    return len(nodes)
 
 
 def index_equations(
@@ -261,9 +547,11 @@ def index_book(
     metadata: dict,
     vector_store: QdrantVectorStore,
     equation_store: QdrantVectorStore | None,
+    chapter_store: QdrantVectorStore | None,
     config: dict,
-) -> tuple[int, int]:
-    """Index a single book and return (text_chunks, equation_count).
+    blocks: list[dict] | None = None,
+) -> tuple[int, int, int]:
+    """Index a single book and return (text_chunks, equation_count, chapter_count).
 
     Args:
         book_id: Calibre book ID
@@ -272,62 +560,96 @@ def index_book(
         metadata: Calibre metadata
         vector_store: Main text chunk store
         equation_store: Separate equation store (or None to skip)
+        chapter_store: Chapter summary store (or None to skip)
         config: Application config
+        blocks: Optional JSON blocks from marker (preferred for page metadata)
 
     Returns:
-        Tuple of (text_chunk_count, equation_count)
+        Tuple of (text_chunk_count, equation_count, chapter_count)
     """
-    # Extract equations from raw content (before augmentation)
-    equations = extract_equations(raw_content)
+    book_title = metadata.get("title", "Unknown")
+
+    # Parse document structure for hierarchical metadata
+    structure = parse_structure(raw_content, title=book_title)
+
+    # Extract equations - prefer JSON blocks (has proper equation markup)
+    if blocks:
+        equations = extract_equations_from_blocks(blocks)
+    else:
+        equations = extract_equations(raw_content)
     eq_count = 0
 
     if equations and equation_store:
         # Add book metadata to equations
         for eq in equations:
             eq.book_id = book_id
-            eq.title = metadata.get("title", "")
+            eq.title = book_title
 
         eq_count = index_equations(equations, metadata, equation_store)
 
-    # Create documents for text chunking
-    documents = create_documents(book_id, content, metadata)
+    # Index chapter summaries
+    ch_count = 0
+    if chapter_store and structure.chapters:
+        ch_count = index_chapters(structure, raw_content, metadata, chapter_store, config)
 
-    # Set up chunking - use equation-aware chunker if equations present
+    # Set up chunking config
     chunk_config = config.get("chunking", {})
     chunk_size = chunk_config.get("chunk_size", 512)
     chunk_overlap = chunk_config.get("chunk_overlap", 50)
 
-    if equations:
-        # Use equation-aware chunking to keep equations with context
-        chunker = EquationAwareChunker(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        chunks = chunker.chunk(content)
-
-        # Convert to LlamaIndex nodes
-        nodes = []
-        for chunk in chunks:
-            node = TextNode(
-                text=chunk["text"],
-                metadata=documents[0].metadata.copy(),
-            )
-            nodes.append(node)
+    # Prefer JSON blocks (has page numbers from marker)
+    if blocks:
+        nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size)
+        # Blocks already have page numbers, just add hierarchical context
+        for node in nodes:
+            page = node.metadata.get("page")
+            context = get_context_for_page(structure, page)
+            node.metadata["chapter_num"] = context["chapter_num"]
+            node.metadata["chapter_title"] = context["chapter_title"]
+            node.metadata["section_title"] = context["section_title"]
+            node.metadata["breadcrumb"] = context["breadcrumb"]
     else:
-        # Standard chunking for non-math content
-        node_parser = SentenceSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        nodes = node_parser.get_nodes_from_documents(documents)
+        # Fallback: use markdown content with text-based chunking
+        documents = create_documents(book_id, content, metadata)
 
-    # Extract page numbers and add to node metadata
-    last_known_page = None
-    for node in nodes:
-        page = extract_page_number(node.text)
-        if page:
-            last_known_page = page
-        node.metadata["page"] = last_known_page
+        if equations:
+            # Use equation-aware chunking to keep equations with context
+            chunker = EquationAwareChunker(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            chunks = chunker.chunk(content)
+
+            # Convert to LlamaIndex nodes
+            nodes = []
+            for chunk in chunks:
+                node = TextNode(
+                    text=chunk["text"],
+                    metadata=documents[0].metadata.copy(),
+                )
+                nodes.append(node)
+        else:
+            # Standard chunking for non-math content
+            node_parser = SentenceSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            nodes = node_parser.get_nodes_from_documents(documents)
+
+        # Extract page numbers from text and add hierarchical context
+        last_known_page = None
+        for node in nodes:
+            page = extract_page_number(node.text)
+            if page:
+                last_known_page = page
+            node.metadata["page"] = last_known_page
+
+            # Add hierarchical context from document structure
+            context = get_context_for_page(structure, last_known_page)
+            node.metadata["chapter_num"] = context["chapter_num"]
+            node.metadata["chapter_title"] = context["chapter_title"]
+            node.metadata["section_title"] = context["section_title"]
+            node.metadata["breadcrumb"] = context["breadcrumb"]
 
     # Create storage context with vector store
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -339,38 +661,9 @@ def index_book(
         show_progress=True,
     )
 
-    return len(nodes), eq_count
+    return len(nodes), eq_count, ch_count
 
 
-def get_indexed_books(client: QdrantClient, collection: str) -> set[int]:
-    """Get set of book_ids already indexed."""
-    try:
-        # Check if collection exists
-        collections = client.get_collections().collections
-        if not any(c.name == collection for c in collections):
-            return set()
-
-        # Scroll through all points to get unique book_ids
-        indexed = set()
-        offset = None
-        while True:
-            results, offset = client.scroll(
-                collection_name=collection,
-                limit=1000,
-                offset=offset,
-                with_payload=["book_id"],
-            )
-            if not results:
-                break
-            for point in results:
-                if point.payload and "book_id" in point.payload:
-                    indexed.add(point.payload["book_id"])
-            if offset is None:
-                break
-
-        return indexed
-    except Exception:
-        return set()
 
 
 def parse_args():
@@ -416,36 +709,59 @@ def main():
     embed_model = setup_embedding_model(config)
     Settings.embed_model = embed_model
 
-    # Serialize Qdrant access - local storage doesn't support concurrent clients
-    with open(QDRANT_LOCK, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            _run_indexing(args, config, calibre_metadata, output_path)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    # Get vector store
+    store = get_vector_store(config)
+
+    # Conditional locking - only needed for file-based backends
+    if store.requires_lock():
+        with open(QDRANT_LOCK, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                _run_indexing(args, config, calibre_metadata, output_path, store, library_path)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    else:
+        _run_indexing(args, config, calibre_metadata, output_path, store, library_path)
 
 
-def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path: Path):
-    """Run the indexing pipeline (called with Qdrant lock held).
+def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path: Path, store, library_path: Path):
+    """Run the indexing pipeline.
 
-    Implements dual indexing:
+    Implements triple indexing:
     1. Text chunks → main collection (librarian_full)
     2. Equations → equation collection (librarian_equations)
+    3. Chapter summaries → chapter collection (librarian_chapters)
+
+    Only indexes books with *status='extracted' (unless --force).
+    Updates Calibre *status to 'indexed' after successful indexing.
+
+    Args:
+        args: Parsed command line arguments
+        config: Application configuration
+        calibre_metadata: Metadata for all books from Calibre
+        output_path: Path to extracted book content
+        store: Vector store backend (LibrarianVectorStore)
+        library_path: Calibre library path for status updates
     """
-    # Set up vector stores
-    client, vector_store = setup_vector_store(config)
-    equation_store = setup_equation_store(config, client)
+    # Get collection names
+    collections = get_collection_names(config)
+    collection = collections["full"]
+    equation_collection = collections["equations"]
+    chapter_collection = collections["chapters"]
 
-    # Get already indexed books
-    collection = config.get("vector_store", {}).get("collection", "librarian_full")
-    indexed_books = set() if args["force"] else get_indexed_books(client, collection)
+    # Get LlamaIndex stores for each collection
+    vector_store = store.get_llama_store(collection)
+    equation_store = store.get_llama_store(equation_collection)
+    chapter_store = store.get_llama_store(chapter_collection)
 
-    # Find extracted books
+    # Get already indexed books from vector store
+    indexed_in_store = set() if args["force"] else store.get_indexed_ids(collection)
+
+    # Find extracted books (directories with content)
     extracted_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name.isdigit()]
 
-    total_chunks = 0
-    total_equations = 0
-
+    # Filter to books needing indexing based on Calibre status
+    books_to_index = []
     for book_dir in sorted(extracted_dirs, key=lambda d: int(d.name)):
         book_id = int(book_dir.name)
 
@@ -453,11 +769,32 @@ def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path:
         if args["book_ids"] and book_id not in args["book_ids"]:
             continue
 
-        # Skip if already indexed
-        if book_id in indexed_books:
-            title = calibre_metadata.get(book_id, {}).get("title", "Unknown")
-            print(f"[{book_id}] {title}: Already indexed, skipping")
-            continue
+        metadata = calibre_metadata.get(book_id, {})
+        status = metadata.get("*status")
+
+        # Skip if already indexed (unless forcing)
+        if not args["force"]:
+            if book_id in indexed_in_store:
+                continue
+            # Only index books with status='extracted' (or legacy books with no status)
+            if status not in (None, "extracted"):
+                continue
+
+        books_to_index.append((book_id, book_dir, metadata))
+
+    if not books_to_index:
+        print("No books need indexing")
+        return
+
+    print(f"Found {len(books_to_index)} books to index")
+
+    total_chunks = 0
+    total_equations = 0
+    total_chapters = 0
+
+    for book_id, book_dir, metadata in books_to_index:
+        title = metadata.get("title", "Unknown")
+        metadata["id"] = book_id  # Ensure ID is in metadata for equations
 
         # Load content (both augmented and raw)
         content, raw_content = load_extracted_book(book_dir)
@@ -465,29 +802,41 @@ def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path:
             print(f"[{book_id}] No extracted content found, skipping")
             continue
 
-        # Get metadata
-        metadata = calibre_metadata.get(book_id, {"title": "Unknown"})
-        metadata["id"] = book_id  # Ensure ID is in metadata for equations
-        title = metadata.get("title", "Unknown")
+        # Try to load JSON blocks (preferred - has page numbers)
+        blocks = load_extracted_blocks(book_dir)
 
-        print(f"[{book_id}] {title}: Indexing...")
+        source_type = "blocks" if blocks else "markdown"
+        print(f"[{book_id}] {title}: Indexing from {source_type}...")
+
+        # If force re-indexing, delete old entries first
+        if args["force"]:
+            for coll in [collection, equation_collection, chapter_collection]:
+                store.delete_by_filter(coll, "book_id", book_id)
 
         try:
-            chunks, eq_count = index_book(
+            chunks, eq_count, ch_count = index_book(
                 book_id, content, raw_content, metadata,
-                vector_store, equation_store, config
+                vector_store, equation_store, chapter_store, config,
+                blocks=blocks
             )
             total_chunks += chunks
             total_equations += eq_count
+            total_chapters += ch_count
 
+            # Update pipeline status to indexed
+            calibre.set_status(book_id, "indexed", library_path)
+
+            # Build status message
+            parts = [f"{chunks} chunks"]
             if eq_count:
-                print(f"[{book_id}] {title}: Created {chunks} chunks + {eq_count} equations")
-            else:
-                print(f"[{book_id}] {title}: Created {chunks} chunks")
+                parts.append(f"{eq_count} equations")
+            if ch_count:
+                parts.append(f"{ch_count} chapters")
+            print(f"[{book_id}] {title}: Created {' + '.join(parts)}")
         except Exception as e:
             print(f"[{book_id}] {title}: Indexing failed: {e}", file=sys.stderr)
 
-    print(f"\nTotal indexed: {total_chunks} chunks, {total_equations} equations")
+    print(f"\nTotal indexed: {total_chunks} chunks, {total_equations} equations, {total_chapters} chapters")
 
 
 if __name__ == "__main__":

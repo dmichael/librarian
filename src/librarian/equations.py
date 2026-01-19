@@ -14,6 +14,7 @@ This enables queries like:
 - "what equations model birdsong" → finds equations by context
 """
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,121 @@ class ExtractedEquation:
             parts.append(where_match.group(1))
 
         self.searchable_text = " ".join(parts)
+
+
+def extract_equations_from_blocks(
+    blocks: list[dict], context_chars: int = 500
+) -> list[ExtractedEquation]:
+    """Extract equations from marker JSON blocks.
+
+    Handles both raw blocks (with HTML/MathML) and processed blocks
+    (with text field from load_extracted_blocks).
+
+    Args:
+        blocks: List of block dicts from marker JSON output
+        context_chars: Characters of context to capture from adjacent blocks
+
+    Returns:
+        List of ExtractedEquation objects with context
+    """
+    equations = []
+
+    for i, block in enumerate(blocks):
+        if block.get("block_type") != "Equation":
+            continue
+
+        # Try to get LaTeX from different sources
+        latex = None
+
+        # Option 1: Raw HTML with MathML
+        html = block.get("html", "")
+        if html:
+            latex_match = re.search(r"<math[^>]*>(.+?)</math>", html, re.DOTALL)
+            if latex_match:
+                latex = latex_match.group(1).strip()
+
+        # Option 2: Processed text field (from load_extracted_blocks)
+        if not latex:
+            text = block.get("text", "")
+            if text:
+                # Clean up escaped underscores from markdown conversion
+                latex = text.replace(r"\_", "_").strip()
+
+        if not latex:
+            continue
+
+        # Get page number
+        page = block.get("page")
+
+        # Gather context from surrounding blocks
+        context_before_parts = []
+        chars_collected = 0
+        for j in range(i - 1, -1, -1):
+            prev_block = blocks[j]
+            if prev_block.get("block_type") == "Equation":
+                continue  # Skip other equations
+            text = prev_block.get("text", "")
+            if not text:
+                # Try to extract from HTML
+                prev_html = prev_block.get("html", "")
+                text = re.sub(r"<[^>]+>", " ", prev_html).strip()
+            if text:
+                context_before_parts.insert(0, text)
+                chars_collected += len(text)
+                if chars_collected >= context_chars:
+                    break
+
+        context_after_parts = []
+        chars_collected = 0
+        for j in range(i + 1, len(blocks)):
+            next_block = blocks[j]
+            if next_block.get("block_type") == "Equation":
+                continue
+            text = next_block.get("text", "")
+            if not text:
+                next_html = next_block.get("html", "")
+                text = re.sub(r"<[^>]+>", " ", next_html).strip()
+            if text:
+                context_after_parts.append(text)
+                chars_collected += len(text)
+                if chars_collected >= context_chars:
+                    break
+
+        context_before = " ".join(context_before_parts)[-context_chars:]
+        context_after = " ".join(context_after_parts)[:context_chars]
+
+        # Look for equation number in the LaTeX or nearby text
+        eq_num = None
+        num_patterns = [
+            r"\((\d+)\)",  # (4)
+            r"\\tag\{(\d+)\}",  # \tag{4}
+            r"[Ee]q(?:uation)?\.?\s*(\d+)",  # Eq. 4
+        ]
+        for pat in num_patterns:
+            num_match = re.search(pat, latex + " " + context_after[:100])
+            if num_match:
+                eq_num = num_match.group(1)
+                break
+
+        # Generate natural language description
+        try:
+            description = _latex_converter.latex_to_text(latex)
+            description = re.sub(r"\s+", " ", description).strip()
+        except Exception:
+            description = ""
+
+        eq = ExtractedEquation(
+            latex=latex,
+            description=description,
+            context_before=context_before,
+            context_after=context_after,
+            equation_number=eq_num,
+            page=page,
+            position=i,  # Block index as position
+        )
+        equations.append(eq)
+
+    return equations
 
 
 def extract_equations(text: str, context_chars: int = 500) -> list[ExtractedEquation]:
@@ -311,13 +427,14 @@ def prepare_equation_documents(
             # Primary content for embedding
             "text": eq.searchable_text,
             # Metadata for filtering and display
+            # Lists are serialized to JSON for LanceDB compatibility
             "metadata": {
                 "type": "equation",  # Distinguishes from text chunks
                 "latex": eq.latex,
                 "description": eq.description,
                 "equation_number": eq.equation_number,
                 "context_window": eq.context_window,
-                "tags": tags,
+                "tags": json.dumps(tags),
                 "book_id": book_metadata.get("id"),
                 "title": book_metadata.get("title", ""),
                 "authors": ", ".join(book_metadata.get("authors", [])),
