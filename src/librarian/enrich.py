@@ -8,10 +8,12 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
 from librarian.files import find_content_json
+from librarian.metadata import compare_authors, lookup_isbn
 
 
 def _html_to_text(html: str, preserve_newlines: bool = False) -> str:
@@ -518,6 +520,330 @@ def format_result(result: dict) -> str:
             lines.append(f"  • {change}")
 
     return "\n".join(lines)
+
+
+def validate_metadata(book_id: int, config: dict = None) -> dict:
+    """Cross-reference Calibre metadata against external sources via ISBN.
+
+    Args:
+        book_id: Calibre book ID
+        config: Optional config dict
+
+    Returns:
+        {
+            "book_id": int,
+            "calibre": {"title": ..., "authors": ..., ...},
+            "external": {"title": ..., "authors": ..., "source": ...},
+            "discrepancies": ["authors", "title", ...],
+            "recommendation": "update" | "keep" | "review",
+            "error": str | None,
+        }
+    """
+    if config is None:
+        config = load_config()
+
+    result = {
+        "book_id": book_id,
+        "calibre": None,
+        "external": None,
+        "discrepancies": [],
+        "recommendation": "keep",
+        "error": None,
+    }
+
+    # 1. Get current Calibre metadata
+    calibre_meta = get_calibre_metadata(book_id, config)
+    if not calibre_meta:
+        result["error"] = "calibre_metadata_not_found"
+        return result
+
+    result["calibre"] = calibre_meta
+
+    # 2. Extract ISBN from identifiers
+    isbn = calibre_meta.get("isbn")
+    if not isbn:
+        result["error"] = "no_isbn"
+        return result
+
+    # 3. Lookup external metadata
+    external = lookup_isbn(isbn)
+    if not external:
+        result["error"] = "lookup_failed"
+        return result
+
+    result["external"] = asdict(external)
+
+    # 4. Compare fields
+    discrepancies = []
+
+    # Compare title (case-insensitive, ignore minor differences)
+    calibre_title = (calibre_meta.get("title") or "").lower().strip()
+    external_title = (external.title or "").lower().strip()
+    if external_title and calibre_title != external_title:
+        # Allow partial match (title might include subtitle)
+        if external_title not in calibre_title and calibre_title not in external_title:
+            discrepancies.append("title")
+
+    # Compare authors
+    calibre_authors = calibre_meta.get("authors", "")
+    if isinstance(calibre_authors, str):
+        calibre_authors = [a.strip() for a in calibre_authors.split("&")] if calibre_authors else []
+
+    if external.authors and not compare_authors(calibre_authors, external.authors):
+        discrepancies.append("authors")
+
+    # Compare publisher
+    calibre_publisher = (calibre_meta.get("publisher") or "").lower().strip()
+    external_publisher = (external.publisher or "").lower().strip()
+    if external_publisher and calibre_publisher and calibre_publisher != external_publisher:
+        # Allow partial match (publisher names vary)
+        if external_publisher not in calibre_publisher and calibre_publisher not in external_publisher:
+            discrepancies.append("publisher")
+
+    result["discrepancies"] = discrepancies
+
+    # 5. Determine recommendation
+    if discrepancies:
+        # High confidence if ISBN matched (which it did)
+        if external.confidence >= 0.9:
+            result["recommendation"] = "update"
+        else:
+            result["recommendation"] = "review"
+    else:
+        result["recommendation"] = "keep"
+
+    return result
+
+
+def apply_validated_metadata(book_id: int, validation_result: dict, config: dict = None) -> tuple[bool, str]:
+    """Apply external metadata to Calibre for validated discrepancies.
+
+    Only applies fields that were flagged as discrepancies.
+
+    Args:
+        book_id: Calibre book ID
+        validation_result: Result from validate_metadata()
+        config: Optional config dict
+
+    Returns:
+        (success, message)
+    """
+    if config is None:
+        config = load_config()
+
+    if validation_result.get("error"):
+        return False, f"cannot apply: {validation_result['error']}"
+
+    if validation_result["recommendation"] == "keep":
+        return False, "no discrepancies to fix"
+
+    external = validation_result.get("external", {})
+    discrepancies = validation_result.get("discrepancies", [])
+
+    if not external or not discrepancies:
+        return False, "no external data or discrepancies"
+
+    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
+    cmd = ["calibredb", "set_metadata", str(book_id), "--library-path", str(library_path)]
+
+    # Only update fields with discrepancies
+    if "title" in discrepancies and external.get("title"):
+        cmd.extend(["--field", f"title:{external['title']}"])
+
+    if "authors" in discrepancies and external.get("authors"):
+        # Join multiple authors with " & "
+        authors_str = " & ".join(external["authors"])
+        cmd.extend(["--field", f"authors:{authors_str}"])
+
+    if "publisher" in discrepancies and external.get("publisher"):
+        cmd.extend(["--field", f"publisher:{external['publisher']}"])
+
+    if len(cmd) == 5:  # No fields to update
+        return False, "no fields to update"
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            return True, f"updated: {', '.join(discrepancies)}"
+        return False, result.stderr or "calibredb failed"
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+
+
+def format_validation_result(result: dict) -> str:
+    """Format validation result for CLI output."""
+    lines = []
+    lines.append(f"Book ID: {result['book_id']}")
+
+    if result.get("error"):
+        lines.append(f"Error: {result['error']}")
+        return "\n".join(lines)
+
+    calibre = result.get("calibre", {})
+    external = result.get("external", {})
+
+    lines.append(f"\nCalibre metadata:")
+    lines.append(f"  Title:     {calibre.get('title', 'N/A')}")
+    lines.append(f"  Authors:   {calibre.get('authors', 'N/A')}")
+    lines.append(f"  Publisher: {calibre.get('publisher', 'N/A')}")
+    lines.append(f"  ISBN:      {calibre.get('isbn', 'N/A')}")
+
+    if external:
+        lines.append(f"\nExternal metadata ({external.get('source', 'unknown')}):")
+        lines.append(f"  Title:     {external.get('title', 'N/A')}")
+        lines.append(f"  Authors:   {external.get('authors', [])}")
+        lines.append(f"  Publisher: {external.get('publisher', 'N/A')}")
+
+    discrepancies = result.get("discrepancies", [])
+    recommendation = result.get("recommendation", "keep")
+
+    if discrepancies:
+        lines.append(f"\nDiscrepancies: {', '.join(discrepancies)}")
+    else:
+        lines.append("\nNo discrepancies found.")
+
+    lines.append(f"Recommendation: {recommendation}")
+
+    return "\n".join(lines)
+
+
+def list_books_with_isbn(config: dict = None) -> list[int]:
+    """List all books that have an ISBN for validation."""
+    if config is None:
+        config = load_config()
+    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
+
+    cmd = [
+        "calibredb", "list",
+        "--library-path", str(library_path),
+        "--search", "isbn:true",
+        "--fields", "id",
+        "--for-machine",
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return []
+        data = json.loads(result.stdout)
+        return [book["id"] for book in data]
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        return []
+
+
+def parse_validate_args():
+    """Parse command line arguments for librarian-validate."""
+    args = {
+        "book_id": None,
+        "all": False,
+        "fix": False,
+    }
+
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == "--book-id" and i + 1 < len(sys.argv):
+            args["book_id"] = int(sys.argv[i + 1])
+            i += 1
+        elif arg == "--all":
+            args["all"] = True
+        elif arg == "--fix":
+            args["fix"] = True
+        elif arg in ("-h", "--help"):
+            print("""Usage: librarian-validate [OPTIONS]
+
+Cross-reference Calibre metadata against external sources (Google Books, OpenLibrary).
+
+Options:
+  --book-id ID   Validate a specific book
+  --all          Validate all books with ISBN
+  --fix          Auto-fix high-confidence discrepancies
+  -h, --help     Show this help
+
+Examples:
+  librarian-validate --book-id 32
+  librarian-validate --book-id 32 --fix
+  librarian-validate --all
+  librarian-validate --all --fix""")
+            sys.exit(0)
+        else:
+            print(f"Unknown argument: {arg}", file=sys.stderr)
+            sys.exit(1)
+        i += 1
+
+    return args
+
+
+def validate_main():
+    """CLI entry point for librarian-validate."""
+    args = parse_validate_args()
+    config = load_config()
+
+    if args["all"]:
+        book_ids = list_books_with_isbn(config)
+        if not book_ids:
+            print("No books with ISBN found.")
+            return
+
+        print(f"Validating {len(book_ids)} books with ISBN...\n")
+
+        stats = {"validated": 0, "discrepancies": 0, "fixed": 0, "errors": 0}
+
+        for book_id in book_ids:
+            result = validate_metadata(book_id, config)
+
+            if result.get("error"):
+                if result["error"] != "no_isbn":  # Expected for some books
+                    stats["errors"] += 1
+                continue
+
+            stats["validated"] += 1
+            discrepancies = result.get("discrepancies", [])
+
+            if discrepancies:
+                stats["discrepancies"] += 1
+                calibre = result.get("calibre", {})
+                external = result.get("external", {})
+
+                print(f"[{book_id}] {calibre.get('title', 'Unknown')}")
+                print(f"  Discrepancies: {', '.join(discrepancies)}")
+                if "authors" in discrepancies:
+                    print(f"    Calibre:  {calibre.get('authors')}")
+                    print(f"    External: {external.get('authors')} ({external.get('source')})")
+
+                if args["fix"] and result["recommendation"] == "update":
+                    success, msg = apply_validated_metadata(book_id, result, config)
+                    if success:
+                        print(f"    Fixed: {msg}")
+                        stats["fixed"] += 1
+                    else:
+                        print(f"    Fix failed: {msg}")
+                print()
+
+        print(f"\nSummary:")
+        print(f"  Validated: {stats['validated']}")
+        print(f"  Discrepancies: {stats['discrepancies']}")
+        if args["fix"]:
+            print(f"  Fixed: {stats['fixed']}")
+        if stats["errors"]:
+            print(f"  Errors: {stats['errors']}")
+        return
+
+    if args["book_id"]:
+        result = validate_metadata(args["book_id"], config)
+        print(format_validation_result(result))
+
+        if args["fix"] and result["recommendation"] == "update":
+            print("\nApplying fix...")
+            success, msg = apply_validated_metadata(args["book_id"], result, config)
+            if success:
+                print(f"Success: {msg}")
+            else:
+                print(f"Failed: {msg}")
+        return
+
+    print("Error: --book-id or --all required", file=sys.stderr)
+    sys.exit(1)
 
 
 def parse_args():

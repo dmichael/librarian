@@ -165,6 +165,81 @@ class LanceDBStore:
         except Exception:
             pass
 
+    def get_collection_count(self, collection_name: str) -> int:
+        """Get number of documents in a table."""
+        try:
+            if not self.collection_exists(collection_name):
+                return 0
+            table = self.db.open_table(collection_name)
+            return table.count_rows()
+        except Exception:
+            return 0
+
+    def get_metadata_counts(self, collection_name: str, field: str) -> dict[str, int]:
+        """Count occurrences of each distinct value for a metadata field."""
+        try:
+            if not self.collection_exists(collection_name):
+                return {}
+
+            table = self.db.open_table(collection_name)
+            df = table.to_pandas()
+            counts: dict[str, int] = {}
+
+            if "metadata" in df.columns:
+                for metadata in df["metadata"]:
+                    if metadata and isinstance(metadata, dict):
+                        val = str(metadata.get(field, "Unknown"))
+                    elif metadata and isinstance(metadata, str):
+                        import json
+
+                        try:
+                            meta_dict = json.loads(metadata)
+                            val = str(meta_dict.get(field, "Unknown"))
+                        except (json.JSONDecodeError, TypeError):
+                            val = "Unknown"
+                    else:
+                        val = "Unknown"
+                    counts[val] = counts.get(val, 0) + 1
+
+            return counts
+        except Exception:
+            return {}
+
+    def get_documents_by_filter(
+        self, collection_name: str, filters: dict[str, any]
+    ) -> list[tuple[str, dict]]:
+        """Get documents matching metadata filters."""
+        try:
+            if not self.collection_exists(collection_name):
+                return []
+
+            table = self.db.open_table(collection_name)
+            df = table.to_pandas()
+            results = []
+
+            if "metadata" not in df.columns or "text" not in df.columns:
+                return []
+
+            for _, row in df.iterrows():
+                metadata = row["metadata"]
+                if metadata and isinstance(metadata, str):
+                    import json
+
+                    try:
+                        metadata = json.loads(metadata)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if not metadata or not isinstance(metadata, dict):
+                    continue
+
+                if all(metadata.get(k) == v for k, v in filters.items()):
+                    results.append((row.get("text", ""), dict(metadata)))
+
+            return results
+        except Exception:
+            return []
+
     def requires_lock(self) -> bool:
         """LanceDB handles concurrent reads without external locking."""
         return False

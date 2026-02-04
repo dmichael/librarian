@@ -117,6 +117,78 @@ class QdrantFileStore:
         except Exception:
             pass  # Collection might not exist
 
+    def get_collection_count(self, collection_name: str) -> int:
+        """Get number of documents in a collection."""
+        try:
+            if not self.collection_exists(collection_name):
+                return 0
+            return self.client.count(collection_name).count
+        except Exception:
+            return 0
+
+    def get_metadata_counts(self, collection_name: str, field: str) -> dict[str, int]:
+        """Count occurrences of each distinct value for a metadata field."""
+        try:
+            if not self.collection_exists(collection_name):
+                return {}
+
+            counts: dict[str, int] = {}
+            offset = None
+
+            while True:
+                results, offset = self.client.scroll(
+                    collection_name=collection_name,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=[field],
+                )
+                if not results:
+                    break
+                for point in results:
+                    val = (point.payload or {}).get(field, "Unknown")
+                    counts[str(val)] = counts.get(str(val), 0) + 1
+                if offset is None:
+                    break
+
+            return counts
+        except Exception:
+            return {}
+
+    def get_documents_by_filter(
+        self, collection_name: str, filters: dict[str, any]
+    ) -> list[tuple[str, dict]]:
+        """Get documents matching metadata filters."""
+        try:
+            if not self.collection_exists(collection_name):
+                return []
+
+            conditions = [
+                FieldCondition(key=k, match=MatchValue(value=v))
+                for k, v in filters.items()
+            ]
+            results_list = []
+            offset = None
+
+            while True:
+                results, offset = self.client.scroll(
+                    collection_name=collection_name,
+                    limit=1000,
+                    offset=offset,
+                    scroll_filter=Filter(must=conditions),
+                    with_payload=True,
+                )
+                if not results:
+                    break
+                for point in results:
+                    text = (point.payload or {}).get("text", "")
+                    results_list.append((text, dict(point.payload or {})))
+                if offset is None:
+                    break
+
+            return results_list
+        except Exception:
+            return []
+
     def requires_lock(self) -> bool:
         """Qdrant file-based storage requires external locking."""
         return True

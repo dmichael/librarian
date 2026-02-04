@@ -131,6 +131,57 @@ class ChromaStore:
         except Exception:
             pass
 
+    def get_collection_count(self, collection_name: str) -> int:
+        """Get number of documents in a collection."""
+        try:
+            if not self.collection_exists(collection_name):
+                return 0
+            return self.client.get_collection(collection_name).count()
+        except Exception:
+            return 0
+
+    def get_metadata_counts(self, collection_name: str, field: str) -> dict[str, int]:
+        """Count occurrences of each distinct value for a metadata field."""
+        try:
+            if not self.collection_exists(collection_name):
+                return {}
+
+            collection = self.client.get_collection(collection_name)
+            counts: dict[str, int] = {}
+            offset = 0
+            limit = 1000
+
+            while True:
+                result = collection.get(offset=offset, limit=limit, include=["metadatas"])
+                if not result["ids"]:
+                    break
+                for metadata in result["metadatas"]:
+                    val = str((metadata or {}).get(field, "Unknown"))
+                    counts[val] = counts.get(val, 0) + 1
+                if len(result["ids"]) < limit:
+                    break
+                offset += limit
+
+            return counts
+        except Exception:
+            return {}
+
+    def get_documents_by_filter(
+        self, collection_name: str, filters: dict[str, any]
+    ) -> list[tuple[str, dict]]:
+        """Get documents matching metadata filters."""
+        try:
+            if not self.collection_exists(collection_name):
+                return []
+
+            collection = self.client.get_collection(collection_name)
+            where = {"$and": [{k: {"$eq": v}} for k, v in filters.items()]}
+            result = collection.get(where=where, include=["documents", "metadatas"])
+
+            return list(zip(result["documents"], result["metadatas"]))
+        except Exception:
+            return []
+
     def requires_lock(self) -> bool:
         """Chroma handles concurrency internally."""
         return False

@@ -60,7 +60,10 @@ from librarian.equations import (
 from librarian.structure import (
     DocumentStructure,
     parse_structure,
+    extract_structure_from_blocks,
+    validate_structure,
     get_context_for_page,
+    get_chapter_for_block,
 )
 
 
@@ -253,7 +256,8 @@ def create_nodes_from_blocks(
         chunk_size: Max characters per node (large blocks are split)
 
     Returns:
-        List of TextNode objects ready for indexing
+        List of TextNode objects ready for indexing.
+        Each node has _block_idx in metadata for chapter lookup.
     """
     subjects = metadata.get("subjects", [])
     tags = metadata.get("tags", [])
@@ -271,7 +275,7 @@ def create_nodes_from_blocks(
     }
 
     nodes = []
-    for block in blocks:
+    for block_idx, block in enumerate(blocks):
         text = block["text"]
         page = block.get("page")
         block_type = block.get("block_type", "Text")
@@ -286,6 +290,7 @@ def create_nodes_from_blocks(
                     node_meta = base_metadata.copy()
                     node_meta["page"] = page
                     node_meta["block_type"] = block_type
+                    node_meta["_block_idx"] = block_idx  # Track original block
                     nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
                     current_chunk = part
                 else:
@@ -294,11 +299,13 @@ def create_nodes_from_blocks(
                 node_meta = base_metadata.copy()
                 node_meta["page"] = page
                 node_meta["block_type"] = block_type
+                node_meta["_block_idx"] = block_idx  # Track original block
                 nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
         else:
             node_meta = base_metadata.copy()
             node_meta["page"] = page
             node_meta["block_type"] = block_type
+            node_meta["_block_idx"] = block_idx  # Track original block
             nodes.append(TextNode(text=text, metadata=node_meta))
 
     return nodes
@@ -570,7 +577,24 @@ def index_book(
     book_title = metadata.get("title", "Unknown")
 
     # Parse document structure for hierarchical metadata
-    structure = parse_structure(raw_content, title=book_title)
+    # PRIMARY: Use JSON blocks (reliable page numbers from PDF)
+    # FALLBACK: Parse markdown (may have scrambled page markers)
+    if blocks:
+        structure = extract_structure_from_blocks(blocks, title=book_title)
+        structure_source = "blocks"
+    else:
+        structure = parse_structure(raw_content, title=book_title)
+        structure_source = "markdown"
+        print(f"  [FALLBACK] Using markdown for structure (no JSON blocks)", file=sys.stderr)
+
+    # Validate structure and warn if issues
+    total_pages = max((b.get('page') or 0) for b in blocks) if blocks else None
+    validation = validate_structure(structure, total_pages)
+    if validation["warnings"]:
+        for warning in validation["warnings"]:
+            print(f"  [WARNING] Structure: {warning}", file=sys.stderr)
+    if validation["chapter_count"] > 0:
+        print(f"  Structure ({structure_source}): {validation['chapter_count']} chapters detected")
 
     # Extract equations - prefer JSON blocks (has proper equation markup)
     if blocks:
@@ -600,14 +624,26 @@ def index_book(
     # Prefer JSON blocks (has page numbers from marker)
     if blocks:
         nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size)
-        # Blocks already have page numbers, just add hierarchical context
+        # Use BLOCK INDEX for chapter assignment (page numbers may be scrambled)
         for node in nodes:
-            page = node.metadata.get("page")
-            context = get_context_for_page(structure, page)
-            node.metadata["chapter_num"] = context["chapter_num"]
-            node.metadata["chapter_title"] = context["chapter_title"]
-            node.metadata["section_title"] = context["section_title"]
-            node.metadata["breadcrumb"] = context["breadcrumb"]
+            block_idx = node.metadata.pop("_block_idx", None)  # Remove internal field
+
+            # Look up chapter by block index (more reliable than page)
+            chapter = get_chapter_for_block(structure, block_idx) if block_idx is not None else None
+
+            if chapter:
+                node.metadata["chapter_num"] = chapter.number
+                node.metadata["chapter_title"] = chapter.title
+                node.metadata["section_title"] = ""  # TODO: section tracking
+                node.metadata["breadcrumb"] = chapter.breadcrumb
+            else:
+                # Fallback to page-based lookup
+                page = node.metadata.get("page")
+                context = get_context_for_page(structure, page)
+                node.metadata["chapter_num"] = context["chapter_num"]
+                node.metadata["chapter_title"] = context["chapter_title"]
+                node.metadata["section_title"] = context["section_title"]
+                node.metadata["breadcrumb"] = context["breadcrumb"]
     else:
         # Fallback: use markdown content with text-based chunking
         documents = create_documents(book_id, content, metadata)
@@ -650,6 +686,14 @@ def index_book(
             node.metadata["chapter_title"] = context["chapter_title"]
             node.metadata["section_title"] = context["section_title"]
             node.metadata["breadcrumb"] = context["breadcrumb"]
+
+    # Validate chapter coverage in nodes
+    nodes_with_chapter = sum(1 for n in nodes if n.metadata.get("chapter_num"))
+    coverage = nodes_with_chapter / len(nodes) if nodes else 0
+    if coverage < 0.5 and len(nodes) > 10:
+        print(f"  [WARNING] Only {coverage:.0%} of chunks have chapter metadata", file=sys.stderr)
+    elif nodes_with_chapter > 0:
+        print(f"  Chapter coverage: {coverage:.0%} ({nodes_with_chapter}/{len(nodes)} chunks)")
 
     # Create storage context with vector store
     storage_context = StorageContext.from_defaults(vector_store=vector_store)

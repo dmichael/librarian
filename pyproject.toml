@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]  # For Claude classification
+cloud = ["modal>=0.60.0"]  # For cloud GPU extraction
 lancedb = [
     "llama-index-vector-stores-lancedb>=0.4.0",
     "lancedb>=0.5.0",
@@ -27,6 +28,10 @@ chroma = [
     "chromadb>=0.4.0",
     "llama-index-vector-stores-chroma>=0.5.0",
 ]  # Alternative vector store backend
+pgvector = [
+    "llama-index-vector-stores-postgres>=0.6.0",
+    "psycopg[binary]>=3.1.0",
+]  # PostgreSQL pgvector backend
 
 [project.scripts]
 # Main commands
@@ -34,6 +39,7 @@ librarian-pipeline = "librarian.intake:pipeline_main"
 librarian-init = "librarian.intake:init_main"
 librarian-intake = "librarian.intake:intake_main"
 librarian-extract = "librarian.extract:main"
+librarian-extract-cloud = "librarian.cloud_extract:main"
 librarian-index = "librarian.index:main"
 librarian-status = "librarian.calibre:status_main"
 # Query and search
@@ -43,6 +49,7 @@ librarian-read = "librarian.read:main"
 # Utilities
 librarian-classify = "librarian.classify:main"
 librarian-enrich = "librarian.enrich:main"
+librarian-validate = "librarian.enrich:validate_main"
 librarian-benchmark = "librarian.benchmark:main"
 librarian-stats = "librarian.stats:main"
 librarian-toc = "librarian.stats:toc_main"

@@ -8,7 +8,6 @@ Usage:
 
 import json
 import sys
-from collections import Counter
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
@@ -20,18 +19,10 @@ def get_block_type_distribution(config: dict) -> dict[str, int]:
     store = get_vector_store(config)
     collection_names = get_collection_names(config)
 
-    # Use the main collection (librarian_full)
     collection_name = collection_names.get("full", "librarian_full")
-    collection = store.client.get_collection(collection_name)
-
-    # Get all metadata to count block types
-    results = collection.get(include=["metadatas"])
-
-    block_types = Counter(
-        m.get("block_type", "Unknown")
-        for m in results["metadatas"]
-    )
-    return dict(block_types.most_common())
+    counts = store.get_metadata_counts(collection_name, "block_type")
+    # Sort by count descending
+    return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
 
 def get_collection_stats(config: dict) -> dict[str, dict]:
@@ -42,8 +33,7 @@ def get_collection_stats(config: dict) -> dict[str, dict]:
     stats = {}
     for name, collection_name in collection_names.items():
         try:
-            collection = store.client.get_collection(collection_name)
-            count = collection.count()
+            count = store.get_collection_count(collection_name)
             stats[name] = {
                 "collection_name": collection_name,
                 "count": count,
@@ -70,16 +60,7 @@ def get_indexed_books(config: dict) -> list[dict]:
     collection_names = get_collection_names(config)
 
     collection_name = collection_names.get("full", "librarian_full")
-    collection = store.client.get_collection(collection_name)
-
-    results = collection.get(include=["metadatas"])
-
-    # Get unique book IDs from vector store
-    indexed_ids = set()
-    for meta in results["metadatas"]:
-        book_id = meta.get("book_id")
-        if book_id:
-            indexed_ids.add(book_id)
+    indexed_ids = store.get_indexed_ids(collection_name)
 
     # Get Calibre metadata for these books
     library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
@@ -227,21 +208,15 @@ def get_book_toc(config: dict, book_id: int) -> list[str]:
     collection_names = get_collection_names(config)
 
     collection_name = collection_names.get("full", "librarian_full")
-    collection = store.client.get_collection(collection_name)
-
-    results = collection.get(
-        where={"$and": [
-            {"book_id": {"$eq": book_id}},
-            {"block_type": {"$eq": "TableOfContents"}}
-        ]},
-        include=["documents", "metadatas"]
+    results = store.get_documents_by_filter(
+        collection_name,
+        {"book_id": book_id, "block_type": "TableOfContents"},
     )
 
     # Sort by page number
-    toc_items = list(zip(results["documents"], results["metadatas"]))
-    toc_items.sort(key=lambda x: x[1].get("page", 0))
+    results.sort(key=lambda x: x[1].get("page", 0))
 
-    return [doc for doc, _ in toc_items]
+    return [doc for doc, _ in results]
 
 
 def toc_main():

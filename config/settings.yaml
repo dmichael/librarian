@@ -27,7 +27,7 @@ embedding:
 
 # Vector store configuration
 vector_store:
-  # Backend: qdrant-file (default), qdrant-server, lancedb, or chroma
+  # Backend: qdrant-file (default), qdrant-server, lancedb, chroma, or pgvector
   backend: chroma
 
   # Each backend stores data in its own directory

@@ -82,3 +82,40 @@ class LibrarianVectorStore(Protocol):
             LlamaIndex VectorStore instance for the collection
         """
         ...
+
+    def get_collection_count(self, collection_name: str) -> int:
+        """Get the number of documents in a collection.
+
+        Args:
+            collection_name: Name of the collection
+
+        Returns:
+            Number of documents, or 0 if collection doesn't exist
+        """
+        ...
+
+    def get_metadata_counts(self, collection_name: str, field: str) -> dict[str, int]:
+        """Count occurrences of each distinct value for a metadata field.
+
+        Args:
+            collection_name: Name of the collection
+            field: Metadata field name to aggregate
+
+        Returns:
+            Dict mapping field values to their counts
+        """
+        ...
+
+    def get_documents_by_filter(
+        self, collection_name: str, filters: dict[str, any]
+    ) -> list[tuple[str, dict]]:
+        """Get documents matching metadata filters.
+
+        Args:
+            collection_name: Name of the collection
+            filters: Dict of {field: value} equality filters (ANDed together)
+
+        Returns:
+            List of (document_text, metadata_dict) tuples
+        """
+        ...

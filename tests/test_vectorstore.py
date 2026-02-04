@@ -1,5 +1,6 @@
 """Tests for vectorstore backends."""
 
+import socket
 import tempfile
 from pathlib import Path
 
@@ -8,6 +9,15 @@ import pytest
 from librarian.vectorstore import get_vector_store, get_collection_names
 from librarian.vectorstore.protocol import LibrarianVectorStore
 from librarian.vectorstore.qdrant_file import QdrantFileStore
+
+
+def _pg_reachable(host="agents.local", port=5432, timeout=2) -> bool:
+    """Check if PostgreSQL is reachable via TCP."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class TestQdrantFileStore:
@@ -246,3 +256,45 @@ class TestChromaStore:
         """Collection should exist after get_llama_store creates it."""
         temp_chroma_store.get_llama_store("new_collection")
         assert temp_chroma_store.collection_exists("new_collection") is True
+
+
+@pytest.mark.skipif(not _pg_reachable(), reason="PostgreSQL on agents.local not reachable")
+class TestPgvectorStore:
+    """Tests for PgvectorStore backend (requires PostgreSQL with pgvector)."""
+
+    @pytest.fixture
+    def pg_store(self):
+        """Create a PgvectorStore pointing at agents.local."""
+        try:
+            from librarian.vectorstore.pgvector_store import PgvectorStore, PGVECTOR_AVAILABLE
+        except ImportError:
+            pytest.skip("pgvector dependencies not installed")
+            return
+
+        if not PGVECTOR_AVAILABLE:
+            pytest.skip("llama-index-vector-stores-postgres not installed")
+            return
+
+        store = PgvectorStore(
+            connection_string="postgresql://dmichael@agents.local:5432/librarian",
+            embed_dim=768,
+            default_collection="test_collection",
+        )
+        yield store
+
+    def test_implements_protocol(self, pg_store):
+        """Store should implement LibrarianVectorStore protocol."""
+        assert isinstance(pg_store, LibrarianVectorStore)
+
+    def test_requires_lock(self, pg_store):
+        """pgvector should not require external locking."""
+        assert pg_store.requires_lock() is False
+
+    def test_collection_not_exists(self, pg_store):
+        """Non-existent collection should return False."""
+        assert pg_store.collection_exists("nonexistent_table_xyz") is False
+
+    def test_get_indexed_ids_empty(self, pg_store):
+        """Non-existent collection should return empty set."""
+        result = pg_store.get_indexed_ids("nonexistent_table_xyz")
+        assert result == set()

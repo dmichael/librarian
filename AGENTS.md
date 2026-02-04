@@ -177,6 +177,29 @@ make            # Run full pipeline (ingest → extract → index)
 make -j4        # Run with 4 parallel jobs (faster extraction)
 ```
 
+**Extraction timing expectations:**
+
+Book extraction via marker is GPU-intensive and takes hours, not minutes. A typical 600-page book (like SICP) takes ~10-12 hours for full text recognition. Short papers (10-20 pages) take minutes. Since many Kindle books fail DRM and require PDF screenshot capture, expect most real content to be book-length PDFs. Plan batch extractions accordingly (overnight runs, etc.).
+
+**Cloud extraction (Modal):**
+
+For faster extraction, offload to cloud A100 GPUs via Modal:
+
+```bash
+# One-time setup
+pip install -e ".[cloud]"
+modal setup  # Authenticate with Modal account
+
+# Extract all pending books in parallel on cloud
+make extract-cloud
+
+# Or via CLI directly
+librarian-extract --cloud
+librarian-extract --cloud --book-id 5  # Specific book
+```
+
+Cloud extraction runs all books in parallel (one A100 per book). A 600-page book takes ~1 hour instead of ~10 hours. Cost is ~$3-5 per book. All 18 pending books can complete in ~1 hour total for ~$15-20.
+
 **Pipeline flow:**
 ```
 intake/ebooks/*.pdf,epub  →  make ingest   →  Calibre
@@ -229,6 +252,7 @@ librarian-extract --help
 | Command | Description |
 |---------|-------------|
 | `librarian-extract` | Extract PDF/EPUB to markdown (uses marker) |
+| `librarian-extract --cloud` | Extract on Modal A100s (parallel, faster) |
 | `librarian-kindle-extract` | DRM removal + EPUB conversion for Kindle books |
 | `librarian-classify` | LLM-assisted subject classification |
 | `librarian-index` | Embed and store in vector DB |

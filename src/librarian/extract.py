@@ -491,6 +491,8 @@ def parse_args():
     args = {
         "dry_run": False,
         "force": False,
+        "cloud": False,
+        "parallel": 0,  # 0 = unlimited (only applies to --cloud)
         "book_ids": [],
     }
 
@@ -501,9 +503,25 @@ def parse_args():
             args["dry_run"] = True
         elif arg == "--force":
             args["force"] = True
+        elif arg == "--cloud":
+            args["cloud"] = True
+        elif arg in ("--parallel", "-p") and i + 1 < len(sys.argv):
+            args["parallel"] = int(sys.argv[i + 1])
+            i += 1
         elif arg == "--book-id" and i + 1 < len(sys.argv):
             args["book_ids"].append(int(sys.argv[i + 1]))
             i += 1
+        elif arg in ("--help", "-h"):
+            print(__doc__ or "Extract content from Calibre library to markdown.")
+            print("\nUsage: librarian-extract [OPTIONS]")
+            print("\nOptions:")
+            print("  --dry-run       Show what would be extracted without doing it")
+            print("  --force         Re-extract even if already extracted")
+            print("  --cloud         Use Modal cloud GPUs (parallel A100s)")
+            print("  --parallel N    Max concurrent cloud extractions (default: unlimited)")
+            print("  --book-id N     Extract specific book ID (can repeat)")
+            print("  --help, -h      Show this help")
+            sys.exit(0)
         i += 1
 
     return args
@@ -528,6 +546,8 @@ def main():
 
     Extracts books with *status='imported' to markdown.
     Updates *status to 'extracted' on success.
+
+    Use --cloud for parallel extraction on Modal A100 GPUs.
     """
     args = parse_args()
 
@@ -543,6 +563,16 @@ def main():
         books = [b for b in get_calibre_books(library_path) if b["id"] in args["book_ids"]]
     else:
         books = get_books_for_extraction(library_path, force=args["force"])
+
+    # Cloud extraction path - parallel on Modal
+    if args["cloud"]:
+        from librarian.cloud_extract import extract_books_cloud
+        extract_books_cloud(
+            books, library_path, output_path,
+            dry_run=args["dry_run"],
+            max_parallel=args["parallel"],
+        )
+        return
 
     if not books:
         print("No books need extraction")

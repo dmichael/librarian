@@ -5,6 +5,7 @@ Provides a unified interface for different vector store backends:
 - qdrant-server: Qdrant server for production (no locking needed)
 - lancedb: Embedded LanceDB for development (no locking needed)
 - chroma: Embedded Chroma for development (flexible metadata, no locking)
+- pgvector: PostgreSQL with pgvector extension (production, no locking needed)
 
 Usage:
     from librarian.vectorstore import get_vector_store
@@ -76,10 +77,21 @@ def get_vector_store(
         path = expand_path(vs_config.get("chroma_path", "~/data/librarian/vectorstore/chroma"))
         return ChromaStore(path=path, default_collection=default_collection)
 
+    elif backend == "pgvector":
+        from librarian.vectorstore.pgvector_store import PgvectorStore
+
+        return PgvectorStore(
+            connection_string=vs_config.get(
+                "pgvector_url", "postgresql://dmichael@localhost:5432/librarian"
+            ),
+            embed_dim=config.get("embedding", {}).get("dim", 768),
+            default_collection=default_collection,
+        )
+
     else:
         raise ValueError(
             f"Unknown vector store backend: {backend}. "
-            "Valid options: qdrant-file, qdrant-server, lancedb, chroma"
+            "Valid options: qdrant-file, qdrant-server, lancedb, chroma, pgvector"
         )
 
 

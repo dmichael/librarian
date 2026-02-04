@@ -312,3 +312,181 @@ def get_chapter_toc(structure: DocumentStructure) -> str:
             lines.append(f"  - {section.title}")
 
     return "\n".join(lines)
+
+
+def _strip_html(html: str) -> str:
+    """Strip HTML tags from text."""
+    return re.sub(r'<[^>]+>', '', html).strip()
+
+
+def extract_structure_from_blocks(blocks: list[dict], title: str = "") -> DocumentStructure:
+    """Extract document structure from marker JSON blocks.
+
+    This is the PRIMARY method for structure extraction. Uses BLOCK ORDER
+    (which reflects reading order) rather than page numbers (which may be
+    scrambled due to PDF extraction issues).
+
+    The algorithm:
+    1. First pass: collect chapter titles from TOC (multiple chapters on same page)
+    2. Second pass: find actual chapter content starts (non-TOC chapter headers)
+    3. Assign block ranges to chapters based on reading order
+
+    Args:
+        blocks: List of block dicts from marker JSON output.
+                Each block has: html, page, block_type, id
+        title: Book title from metadata
+
+    Returns:
+        DocumentStructure with chapters in correct reading order, plus
+        block_to_chapter mapping for assigning content to chapters.
+    """
+    structure = DocumentStructure(title=title)
+
+    chapter_pattern = re.compile(
+        r'^Chapter\s+(\d+)\s*[:\-–]?\s*(.*)$',
+        re.IGNORECASE
+    )
+
+    # First pass: collect all chapter occurrences and detect TOC
+    chapter_occurrences: list[tuple[int, int, str, int]] = []  # (block_idx, ch_num, title, page)
+    for idx, block in enumerate(blocks):
+        if block.get('block_type') != 'SectionHeader':
+            continue
+        # Handle both raw HTML blocks and processed text blocks
+        text = block.get('text') or _strip_html(block.get('html', ''))
+        # Strip markdown heading markers
+        text = re.sub(r'^#+\s*', '', text).strip()
+        ch_match = chapter_pattern.match(text)
+        if ch_match:
+            ch_num = int(ch_match.group(1))
+            ch_title = ch_match.group(2).strip() if ch_match.group(2) else ""
+            page = block.get('page') or 0
+            chapter_occurrences.append((idx, ch_num, ch_title, page))
+
+    # Detect TOC: early cluster of chapters (many chapters within small block range)
+    # Heuristic: if we see multiple different chapter numbers within 50 blocks, it's TOC
+    toc_end_idx = 0
+    if len(chapter_occurrences) >= 4:
+        first_idx = chapter_occurrences[0][0]
+        for i, (idx, ch_num, title, page) in enumerate(chapter_occurrences[:10]):
+            if idx - first_idx < 100 and i >= 3:  # Multiple chapters within 100 blocks
+                toc_end_idx = idx + 1  # Mark everything up to here as TOC
+
+    # Collect chapter info: prefer later occurrences (content) over earlier (TOC)
+    chapter_data: dict[int, tuple[int, str, int]] = {}  # ch_num -> (block_idx, title, page)
+    for idx, ch_num, ch_title, page in chapter_occurrences:
+        if idx < toc_end_idx:
+            # TOC entry - only take title if we don't have one
+            if ch_num not in chapter_data and ch_title:
+                chapter_data[ch_num] = (None, ch_title, None)  # No block/page yet
+            elif ch_num in chapter_data and not chapter_data[ch_num][1] and ch_title:
+                _, _, existing_page = chapter_data[ch_num]
+                chapter_data[ch_num] = (None, ch_title, existing_page)
+        else:
+            # Content entry - use this block index and page
+            existing = chapter_data.get(ch_num)
+            if existing:
+                _, existing_title, _ = existing
+                ch_title = ch_title or existing_title
+            chapter_data[ch_num] = (idx, ch_title, page)
+
+    # Build chapters sorted by number
+    for ch_num in sorted(chapter_data.keys()):
+        block_idx, ch_title, page = chapter_data[ch_num]
+        chapter = Chapter(
+            number=ch_num,
+            title=ch_title or "",
+            page_start=page,
+        )
+        structure.chapters.append(chapter)
+
+    # Build block index to chapter mapping
+    # This maps each block to the chapter it belongs to (for use in indexing)
+    structure._block_to_chapter: dict[int, int] = {}  # block_idx -> chapter_num
+
+    # Find content chapter start blocks (non-TOC chapter headers)
+    content_chapter_starts = []  # [(block_idx, ch_num)]
+    for idx, ch_num, _, _ in chapter_occurrences:
+        if idx >= toc_end_idx:
+            content_chapter_starts.append((idx, ch_num))
+
+    # Sort by block index
+    content_chapter_starts.sort(key=lambda x: x[0])
+
+    # Map blocks to chapters based on which chapter header precedes them
+    if content_chapter_starts:
+        current_chapter_num = None
+        chapter_idx = 0
+        for block_idx in range(len(blocks)):
+            # Check if we've reached a new chapter
+            while (chapter_idx < len(content_chapter_starts) and
+                   block_idx >= content_chapter_starts[chapter_idx][0]):
+                current_chapter_num = content_chapter_starts[chapter_idx][1]
+                chapter_idx += 1
+            if current_chapter_num is not None:
+                structure._block_to_chapter[block_idx] = current_chapter_num
+
+    return structure
+
+
+def get_chapter_for_block(structure: DocumentStructure, block_idx: int) -> Chapter | None:
+    """Get the chapter that a block belongs to, based on reading order.
+
+    Uses the block-to-chapter mapping created during structure extraction.
+    This is more reliable than page-based lookup when page numbers are scrambled.
+    """
+    if not hasattr(structure, '_block_to_chapter'):
+        return None
+
+    ch_num = structure._block_to_chapter.get(block_idx)
+    if ch_num is None:
+        return None
+
+    return structure.get_chapter(ch_num)
+
+
+def validate_structure(structure: DocumentStructure, total_pages: int | None = None) -> dict:
+    """Validate extracted structure and return diagnostic info.
+
+    Returns:
+        {
+            "chapter_count": int,
+            "chapters_with_pages": int,
+            "page_coverage": float (0-1),
+            "warnings": list[str],
+        }
+    """
+    warnings = []
+
+    chapter_count = len(structure.chapters)
+    chapters_with_pages = sum(1 for ch in structure.chapters if ch.page_start)
+
+    if chapter_count == 0:
+        warnings.append("No chapters detected")
+    elif chapters_with_pages < chapter_count:
+        warnings.append(f"Only {chapters_with_pages}/{chapter_count} chapters have page numbers")
+
+    # Check for page order issues
+    last_page = 0
+    for ch in structure.chapters:
+        if ch.page_start and ch.page_start < last_page:
+            warnings.append(f"Chapter {ch.number} page {ch.page_start} is before previous chapter")
+        if ch.page_start:
+            last_page = ch.page_start
+
+    # Estimate page coverage
+    page_coverage = 0.0
+    if total_pages and structure.chapters:
+        covered_pages = sum(
+            (ch.page_end or total_pages) - (ch.page_start or 0)
+            for ch in structure.chapters
+            if ch.page_start
+        )
+        page_coverage = min(1.0, covered_pages / total_pages)
+
+    return {
+        "chapter_count": chapter_count,
+        "chapters_with_pages": chapters_with_pages,
+        "page_coverage": page_coverage,
+        "warnings": warnings,
+    }

@@ -6,7 +6,72 @@ import sys
 import httpx
 
 from librarian.config import expand_path, load_config
-from librarian.query import retrieve
+from librarian.query import retrieve, retrieve_chapters_ordered, retrieve_hierarchical
+
+
+def classify_query(question: str) -> str:
+    """Classify query as 'structural', 'content', or 'hybrid'.
+
+    Structural queries ask about WHERE content is located:
+    - "which chapter", "what chapter"
+    - "where is X explained/discussed/covered"
+    - "first" + topic (first explained, first mentioned)
+    - "in depth", "detailed discussion"
+    - "chapter that covers"
+
+    Content queries ask about WHAT something means:
+    - "what is", "how does", "explain", "describe"
+    - Direct topic questions without location qualifiers
+
+    Hybrid queries want both location and content.
+    """
+    q = question.lower()
+
+    structural_patterns = [
+        "which chapter",
+        "what chapter",
+        "where is",
+        "where does",
+        "where are",
+        "first explain",
+        "first mention",
+        "first discuss",
+        "first introduced",
+        "in depth",
+        "in-depth",
+        "detailed discussion",
+        "chapter that",
+        "chapter covers",
+        "chapter about",
+        "which section",
+        "what section",
+        "where can i find",
+        "where can i read",
+        "what should i read",
+        "which part",
+    ]
+
+    content_patterns = [
+        "what is",
+        "what are",
+        "how does",
+        "how do",
+        "explain",
+        "describe",
+        "define",
+        "tell me about",
+        "summarize",
+    ]
+
+    has_structural = any(pat in q for pat in structural_patterns)
+    has_content = any(pat in q for pat in content_patterns)
+
+    if has_structural and has_content:
+        return "hybrid"
+    elif has_structural:
+        return "structural"
+    else:
+        return "content"
 
 
 def clean_text_for_display(text: str) -> str:
@@ -57,14 +122,87 @@ def call_anthropic(prompt: str, model: str) -> str:
         return ""
 
 
+def _build_chapter_context(chapter_nodes: list) -> tuple[str, list]:
+    """Build context and citations from chapter-level results.
+
+    Returns:
+        Tuple of (context_string, citations_list)
+    """
+    context_parts = []
+    citations = []
+
+    for i, node in enumerate(chapter_nodes, 1):
+        title = node.metadata.get("title", "Unknown")
+        chapter_num = node.metadata.get("chapter_num")
+        chapter_title = node.metadata.get("chapter_title", "")
+        section_titles = node.metadata.get("section_titles", [])
+        library_name = node.metadata.get("library", "")
+        start_page = node.metadata.get("start_page")
+        source_path = node.metadata.get("source_path", "")
+
+        # Chapter summary is stored in node.text
+        summary = node.text[:600] if node.text else ""
+
+        # Build chapter location string
+        ch_label = f"Chapter {chapter_num}" if chapter_num else "Chapter"
+        if chapter_title:
+            ch_label = f"{ch_label}: {chapter_title}"
+
+        # Format sections for context
+        sections_str = ""
+        if section_titles:
+            sections_str = "\n    Sections: " + ", ".join(section_titles[:5])
+            if len(section_titles) > 5:
+                sections_str += f", ... (+{len(section_titles) - 5} more)"
+
+        context_parts.append(
+            f"[{i}] {ch_label} (from {title})\n"
+            f"    Summary: {summary}{sections_str}"
+        )
+
+        # Build PDF link
+        if source_path and start_page:
+            pdf_link = f"file://{source_path}#page={start_page}"
+        elif source_path:
+            pdf_link = f"file://{source_path}"
+        else:
+            pdf_link = None
+
+        citations.append({
+            "num": i,
+            "title": title,
+            "page": start_page,
+            "library": library_name,
+            "quote": summary[:200] + "..." if len(summary) > 200 else summary,
+            "score": node.score,
+            "is_equation": False,
+            "is_chapter": True,
+            "chapter_num": chapter_num,
+            "chapter_title": chapter_title,
+            "section_titles": section_titles,
+            "source_path": source_path,
+            "pdf_link": pdf_link,
+        })
+
+    context = "\n\n".join(context_parts)
+    return context, citations
+
+
 def ask(
     question: str,
     config: dict | None = None,
     library: str | None = None,
     subjects: list[str] | None = None,
     top_k: int = 5,
+    book_id: int | None = None,
+    query_mode: str | None = None,
 ) -> dict:
     """Ask a question and get a synthesized answer with citations.
+
+    Supports three query modes:
+    - "content": Standard retrieval for "what is X" questions
+    - "structural": Chapter-level retrieval for "where/which chapter" questions
+    - "hybrid": Two-stage retrieval for questions needing both
 
     Args:
         question: The question to answer
@@ -72,20 +210,115 @@ def ask(
         library: Optional library to restrict search to
         subjects: Optional subject filters
         top_k: Number of passages to retrieve
+        book_id: Optional book ID to restrict search to
+        query_mode: Force a specific mode ("structural", "content", "hybrid")
+                    If None, auto-detects from question
 
     Returns:
-        dict with 'answer' and 'citations' keys
+        dict with 'answer', 'citations', and 'query_type' keys
     """
     if config is None:
         config = load_config()
 
-    # 1. Retrieve relevant passages
-    nodes = retrieve(question, config, top_k=top_k, subjects=subjects, library=library)
+    # Determine query type
+    query_type = query_mode if query_mode else classify_query(question)
 
-    if not nodes:
-        return {"answer": "No relevant passages found.", "citations": []}
+    # 1. Retrieve based on query type
+    if query_type == "structural":
+        # Use chapter-level retrieval for structural queries
+        nodes = retrieve_chapters_ordered(
+            question,
+            config,
+            top_k=top_k,
+            book_id=book_id,
+            library=library,
+            order_by="first",
+        )
+        if not nodes:
+            return {"answer": "No relevant chapters found.", "citations": [], "query_type": query_type}
 
-    # 2. Build context and citations
+        # Build chapter-focused context
+        context, citations = _build_chapter_context(nodes)
+
+        # Structural-specific prompt
+        prompt = f"""You are a knowledgeable assistant helping navigate a book's structure.
+Answer the user's question about WHERE content is located based on the chapter information below.
+Focus on identifying the relevant chapters and their order (first mention vs. detailed coverage).
+Cite chapters using [N] notation.
+
+CHAPTERS:
+{context}
+
+USER QUESTION: {question}
+
+ANSWER (identify specific chapters, note progression from first mention to detailed coverage):"""
+
+    elif query_type == "hybrid":
+        # Use hierarchical retrieval for hybrid queries
+        nodes = retrieve_hierarchical(
+            question,
+            config,
+            top_k=top_k,
+            subjects=subjects,
+            library=library,
+        )
+        if not nodes:
+            return {"answer": "No relevant passages found.", "citations": [], "query_type": query_type}
+
+        # Build standard context
+        context, citations = _build_content_context(nodes)
+
+        # Hybrid prompt emphasizes both location and content
+        prompt = f"""You are a knowledgeable assistant. Answer the user's question based ONLY on the provided sources.
+The question asks both WHERE to find information AND WHAT the content means.
+Cite sources using [N] notation. Include chapter/section references when available.
+
+SOURCES:
+{context}
+
+USER QUESTION: {question}
+
+ANSWER (address both location and content, use [N] citations):"""
+
+    else:  # content (default)
+        nodes = retrieve(question, config, top_k=top_k, subjects=subjects, library=library)
+        if not nodes:
+            return {"answer": "No relevant passages found.", "citations": [], "query_type": query_type}
+
+        # Build standard context
+        context, citations = _build_content_context(nodes)
+
+        # Standard content prompt
+        prompt = f"""You are a knowledgeable assistant. Answer the user's question based ONLY on the provided sources.
+Cite sources using [N] notation where N is the source number. Be helpful and practical.
+If the sources don't contain enough information to answer, say so.
+
+SOURCES:
+{context}
+
+USER QUESTION: {question}
+
+ANSWER (use [N] citations, be concise and grounded):"""
+
+    # 2. Call LLM for synthesis
+    llm_config = config.get("classification", {})
+    provider = llm_config.get("provider", "ollama")
+    model = llm_config.get("model", "llama3.2")
+
+    if provider == "anthropic":
+        answer = call_anthropic(prompt, model)
+    else:
+        answer = call_ollama(prompt, model)
+
+    return {"answer": answer, "citations": citations, "query_type": query_type}
+
+
+def _build_content_context(nodes: list) -> tuple[str, list]:
+    """Build context and citations from content chunk results.
+
+    Returns:
+        Tuple of (context_string, citations_list)
+    """
     context_parts = []
     citations = []
 
@@ -146,6 +379,7 @@ def ask(
             "quote": quote,
             "score": node.score,
             "is_equation": is_equation,
+            "is_chapter": False,
             "latex": node.metadata.get("latex", "") if is_equation else None,
             "breadcrumb": breadcrumb,
             "chapter_num": chapter_num,
@@ -156,70 +390,84 @@ def ask(
         })
 
     context = "\n\n---\n\n".join(context_parts)
-
-    # 3. Build prompt
-    prompt = f"""You are a knowledgeable assistant. Answer the user's question based ONLY on the provided sources.
-Cite sources using [N] notation where N is the source number. Be helpful and practical.
-If the sources don't contain enough information to answer, say so.
-
-SOURCES:
-{context}
-
-USER QUESTION: {question}
-
-ANSWER (use [N] citations, be concise and grounded):"""
-
-    # 4. Call LLM for synthesis
-    llm_config = config.get("classification", {})  # Reuse classification LLM config
-    provider = llm_config.get("provider", "ollama")
-    model = llm_config.get("model", "llama3.2")
-
-    if provider == "anthropic":
-        answer = call_anthropic(prompt, model)
-    else:
-        answer = call_ollama(prompt, model)
-
-    return {"answer": answer, "citations": citations}
+    return context, citations
 
 
 def format_response(result: dict) -> str:
     """Format the response for CLI display."""
     lines = []
+    query_type = result.get("query_type", "content")
+
     lines.append("=" * 70)
     lines.append("ANSWER")
     lines.append("=" * 70)
     lines.append("")
     lines.append(result["answer"])
     lines.append("")
-    lines.append("=" * 70)
-    lines.append("REFERENCES")
-    lines.append("=" * 70)
+
+    # Use different header for structural queries
+    if query_type == "structural":
+        lines.append("=" * 70)
+        lines.append("CHAPTER PROGRESSION")
+        lines.append("=" * 70)
+    else:
+        lines.append("=" * 70)
+        lines.append("REFERENCES")
+        lines.append("=" * 70)
 
     for c in result["citations"]:
         is_eq = c.get("is_equation", False)
+        is_chapter = c.get("is_chapter", False)
         lib_str = f" [{c['library']}]" if c.get("library") else ""
 
-        if is_eq:
+        if is_chapter:
+            # Format chapter reference
+            ch_num = c.get("chapter_num")
+            ch_title = c.get("chapter_title", "")
+            ch_label = f"Chapter {ch_num}" if ch_num else "Chapter"
+            if ch_title:
+                ch_label = f"{ch_label}: {ch_title}"
+
+            page_str = f"p. {c['page']}" if c.get("page") else ""
+            pdf_link = c.get("pdf_link", "")
+            section_titles = c.get("section_titles", [])
+
+            lines.append(f"\n[{c['num']}] {ch_label}{lib_str}")
+            lines.append(f"    {c['title']}")
+            if page_str:
+                lines.append(f"    {page_str}")
+            if pdf_link:
+                lines.append(f"    {pdf_link}")
+            if section_titles:
+                sections_preview = ", ".join(section_titles[:3])
+                if len(section_titles) > 3:
+                    sections_preview += f", ... (+{len(section_titles) - 3} more)"
+                lines.append(f"    Sections: {sections_preview}")
+            lines.append(f'    "{c["quote"]}"')
+
+        elif is_eq:
             # Format equation reference
             lines.append(f"\n[{c['num']}] EQUATION from {c['title']}{lib_str}")
             if c.get("latex"):
                 lines.append(f"    $${c['latex'][:100]}{'...' if len(c.get('latex', '')) > 100 else ''}$$")
         else:
-            # Format text reference with breadcrumb
+            # Format text reference with breadcrumb prioritized over page
             breadcrumb = c.get("breadcrumb", "")
             page_str = f"p. {c['page']}" if c.get("page") else ""
             pdf_link = c.get("pdf_link", "")
 
-            # Build location string: prefer breadcrumb, fall back to page
-            if breadcrumb:
-                location = breadcrumb
-                if page_str:
-                    location = f"{location} ({page_str})"
-            else:
-                location = page_str if page_str else "location unknown"
-
             lines.append(f"\n[{c['num']}] {c['title']}{lib_str}")
-            lines.append(f"    {location}")
+
+            # Prioritize breadcrumb (chapter/section) - works across all formats
+            if breadcrumb:
+                lines.append(f"    {breadcrumb}")
+                if page_str:
+                    lines.append(f"    (PDF {page_str})")
+            elif page_str:
+                lines.append(f"    PDF {page_str}")
+            else:
+                lines.append(f"    (location unknown)")
+
             if pdf_link:
                 lines.append(f"    {pdf_link}")
             lines.append(f'    "{c["quote"]}"')
@@ -233,6 +481,8 @@ def parse_args():
         "library": None,
         "subjects": [],
         "question_parts": [],
+        "book_id": None,
+        "query_mode": None,
     }
 
     i = 1
@@ -244,18 +494,36 @@ def parse_args():
         elif arg == "--subject" and i + 1 < len(sys.argv):
             args["subjects"].append(sys.argv[i + 1])
             i += 1
+        elif arg == "--book-id" and i + 1 < len(sys.argv):
+            args["book_id"] = int(sys.argv[i + 1])
+            i += 1
+        elif arg == "--structural":
+            args["query_mode"] = "structural"
+        elif arg == "--mode" and i + 1 < len(sys.argv):
+            args["query_mode"] = sys.argv[i + 1]
+            i += 1
         elif arg in ("-h", "--help"):
-            print("Usage: librarian-ask [--library NAME] [--subject SUBJECT ...] <question>")
+            print("Usage: librarian-ask [OPTIONS] <question>")
             print()
             print("Ask a question and get a synthesized answer grounded in your library.")
             print()
             print("Options:")
-            print("  --library   Restrict to a specific library (e.g., --library therapy)")
-            print("  --subject   Filter by subject (e.g., --subject psychology/*)")
+            print("  --library NAME    Restrict to a specific library (e.g., --library therapy)")
+            print("  --subject SUBJ    Filter by subject (e.g., --subject psychology/*)")
+            print("  --book-id ID      Restrict to a specific book by ID")
+            print("  --structural      Force structural query mode (chapter-level retrieval)")
+            print("  --mode MODE       Force query mode: structural, content, or hybrid")
+            print()
+            print("Query modes (auto-detected if not specified):")
+            print("  structural - For 'which chapter', 'where is X explained' questions")
+            print("  content    - For 'what is', 'how does', 'explain' questions (default)")
+            print("  hybrid     - For questions needing both location and content")
             print()
             print("Examples:")
             print("  librarian-ask --library therapy 'How do I cope when overwhelmed?'")
             print("  librarian-ask 'What is wise mind?'")
+            print("  librarian-ask --structural 'which chapter covers subadvisories'")
+            print("  librarian-ask --book-id 32 'where is hedge fund regulation first discussed'")
             sys.exit(0)
         else:
             args["question_parts"].append(arg)
@@ -270,17 +538,27 @@ def main():
 
     if not args["question_parts"]:
         print("Error: No question provided")
-        print("Usage: librarian-ask [--library NAME] <question>")
+        print("Usage: librarian-ask [OPTIONS] <question>")
         sys.exit(1)
 
     question = " ".join(args["question_parts"])
     config = load_config()
+
+    # Determine query mode (auto-detect if not specified)
+    query_mode = args["query_mode"]
+    detected_mode = classify_query(question)
 
     print(f"Question: {question}")
     if args["library"]:
         print(f"Library: {args['library']}")
     if args["subjects"]:
         print(f"Subjects: {args['subjects']}")
+    if args["book_id"]:
+        print(f"Book ID: {args['book_id']}")
+    if query_mode:
+        print(f"Mode: {query_mode} (forced)")
+    else:
+        print(f"Mode: {detected_mode} (auto-detected)")
     print("\nSearching and synthesizing...")
 
     result = ask(
@@ -288,6 +566,8 @@ def main():
         config,
         library=args["library"],
         subjects=args["subjects"] if args["subjects"] else None,
+        book_id=args["book_id"],
+        query_mode=query_mode,
     )
 
     print(format_response(result))

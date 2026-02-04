@@ -343,6 +343,87 @@ def retrieve_chapters(
     return ch_retriever.retrieve(query_text)
 
 
+def retrieve_chapters_ordered(
+    query_text: str,
+    config: dict | None = None,
+    top_k: int = 5,
+    book_id: int | None = None,
+    library: str | None = None,
+    order_by: str = "first",
+) -> list:
+    """Retrieve chapters with ordering for structural queries.
+
+    Args:
+        query_text: The search query
+        config: Optional config (loads default if not provided)
+        top_k: Number of chapters to retrieve
+        book_id: Optional book ID to restrict search to
+        library: Optional library to restrict search to
+        order_by: Ordering strategy
+            - "first": Sort by chapter_num ascending (earliest mention)
+            - "depth": Sort by relevance score descending (most relevant)
+            - "relevance": Same as depth (default vector search ordering)
+
+    Returns:
+        List of chapter nodes with metadata (chapter_num, summary, section_titles)
+        ordered according to order_by parameter
+    """
+    if config is None:
+        config = load_config()
+
+    # Get vector store and collection names
+    store = get_vector_store(config)
+    collections = get_collection_names(config)
+
+    # Setup embedding model
+    embedding_config = config.get("embedding", {})
+    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
+    device = embedding_config.get("device", "cpu")
+
+    if "bge" in model_name.lower():
+        embed_model = HuggingFaceEmbedding(
+            model_name=model_name,
+            device=device,
+            query_instruction="Represent this sentence for searching relevant passages: ",
+        )
+    else:
+        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
+
+    Settings.embed_model = embed_model
+
+    ch_retriever = setup_chapter_retriever(store, collections["chapters"], top_k=top_k)
+
+    if not ch_retriever:
+        return []
+
+    # Build filters
+    filter_list = []
+    if book_id:
+        filter_list.append(
+            MetadataFilter(key="book_id", value=book_id, operator=FilterOperator.EQ)
+        )
+    if library:
+        filter_list.append(
+            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
+        )
+
+    if filter_list:
+        filters = MetadataFilters(filters=filter_list, condition="and")
+        ch_retriever = ch_retriever.index.as_retriever(similarity_top_k=top_k, filters=filters)
+
+    nodes = ch_retriever.retrieve(query_text)
+
+    # Apply ordering
+    if order_by == "first":
+        # Sort by chapter number ascending (earliest chapters first)
+        nodes.sort(key=lambda n: n.metadata.get("chapter_num", 999))
+    elif order_by in ("depth", "relevance"):
+        # Already sorted by relevance from vector search
+        pass
+
+    return nodes
+
+
 def retrieve_hierarchical(
     query_text: str,
     config: dict | None = None,
