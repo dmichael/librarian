@@ -1,11 +1,16 @@
 # Librarian Configuration
 
-library_path: ~/data/librarian/calibre
-output_path: ~/data/librarian/converted
+# =============================================================================
+# Data Paths (all source data lives in ~/data/librarian/)
+# =============================================================================
 
-# Intake directories (unified via librarian-intake)
-intake_path: ~/data/librarian/intake/ebooks     # Drop zone for PDFs/EPUBs
+library_path: ~/data/librarian/calibre           # Calibre library (books + metadata)
+intake_path: ~/data/librarian/intake/ebooks      # Drop zone for PDFs/EPUBs
 kindle_intake_path: ~/data/librarian/intake/kindle  # Synced from Kindle device
+captures_path: ~/data/librarian/intake/captures  # Screenshots for manual OCR workflow
+
+# Extracted text output (intermediate processing)
+output_path: ~/data/librarian/converted
 
 # Pipeline state tracked in Calibre custom columns:
 # - *status: imported, drm_failed, extracted, indexed
@@ -13,52 +18,47 @@ kindle_intake_path: ~/data/librarian/intake/kindle  # Synced from Kindle device
 # - *drm_status: none, stripped, requires_manual
 # - *drm_diagnosis: JSON with failure details
 
-# Legacy paths (deprecated)
-# Note: Kindle for Mac is now handled by librarian-kindle-extract, not source_paths
-# source_paths:
-#   - ~/data/librarian/source
+# =============================================================================
+# Vector Store (PostgreSQL + pgvector)
+# =============================================================================
 
-# Embedding configuration
-embedding:
-  model: BAAI/bge-base-en-v1.5  # Good balance of quality/speed for Apple Silicon
-  # Alternatives: sentence-transformers/all-MiniLM-L6-v2 (faster, smaller)
-  #               intfloat/e5-base-v2 (comparable quality)
-  device: mps  # Use Apple Silicon GPU, or "cpu" for fallback
-
-# Vector store configuration
 vector_store:
-  # Backend: qdrant-file (default), qdrant-server, lancedb, chroma, or pgvector
-  backend: chroma
+  backend: pgvector
+  pgvector_url: postgresql://dmichael@agents.local:5432/librarian
 
-  # Each backend stores data in its own directory
-  qdrant_path: ~/data/librarian/vectorstore/qdrant
-  lancedb_path: ~/data/librarian/vectorstore/lancedb
-  chroma_path: ~/data/librarian/vectorstore/chroma
-
-  # Qdrant server (production) - multi-tenant, no locking needed
-  # backend: qdrant-server
-  # host: localhost
-  # port: 6333
-  # api_key: optional
-  # https: false
-
-  # Collection names (shared across all backends)
+  # Collection names
   collection: librarian_full
   equation_collection: librarian_equations
   chapter_collection: librarian_chapters
 
-# Chunking configuration
+# =============================================================================
+# Embedding Model
+# =============================================================================
+
+embedding:
+  model: BAAI/bge-base-en-v1.5  # Good balance of quality/speed for Apple Silicon
+  dim: 768
+  device: mps  # Apple Silicon GPU, or "cpu" for fallback
+
+# =============================================================================
+# Chunking
+# =============================================================================
+
 chunking:
-  chunk_size: 512  # tokens
+  chunk_size: 512   # tokens
   chunk_overlap: 50  # tokens
 
-# Kindle configuration
-kindle_serial: GR73H30154540QV4  # Device serial for DRM decryption
-captures_path: ~/data/librarian/intake/captures  # Screenshots for manual OCR workflow
+# =============================================================================
+# Kindle DRM
+# =============================================================================
 
-# Classification LLM configuration
+kindle_serial: GR73H30154540QV4  # Device serial for DRM decryption
+
+# =============================================================================
+# Classification LLM
+# =============================================================================
+
 classification:
-  provider: ollama  # or "anthropic" for Claude
-  model: llama3.2   # Ollama model, or claude-sonnet-4-20250514 for Anthropic
-  # For Anthropic, set ANTHROPIC_API_KEY env var
-  sample_size: 5000  # chars to sample from book for classification
+  provider: ollama        # or "anthropic" for Claude
+  model: llama3.2         # Ollama model, or claude-sonnet-4-20250514 for Anthropic
+  sample_size: 5000       # chars to sample from book for classification

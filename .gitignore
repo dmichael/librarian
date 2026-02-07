@@ -9,11 +9,11 @@ __pycache__/
 dist/
 build/
 
-# Data directories (if accidentally created in repo)
+# Data directories (should never be in repo - lives at ~/data/librarian/)
 calibre/
 books/
 converted/
-qdrant/
+vectorstore/
 
 # Agent worktrees
 .worktrees/
