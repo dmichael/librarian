@@ -125,10 +125,9 @@ if MODAL_AVAILABLE:
                 ]
 
                 print(f"[{book_id}] Starting marker extraction: {filename}", flush=True)
-                proc = subprocess.run(cmd, capture_output=True, text=True)
+                # Stream stdout/stderr live so Modal logs show progress
+                proc = subprocess.run(cmd, text=True, stderr=subprocess.PIPE)
                 print(f"[{book_id}] Marker finished with code: {proc.returncode}", flush=True)
-                if proc.stdout:
-                    print(proc.stdout, flush=True)
 
                 if proc.returncode != 0:
                     stderr = proc.stderr[:500] if proc.stderr else ""
