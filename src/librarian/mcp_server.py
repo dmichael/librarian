@@ -252,64 +252,40 @@ def extract_book(book_id: int) -> dict:
         book_output = output_path / str(book_id)
         book_output.mkdir(parents=True, exist_ok=True)
 
-        if source.suffix.lower() == ".epub":
-            # Native EPUB extraction — no GPU needed
-            from librarian.epub_extract import extract_epub
+        # All formats go through Modal/marker for consistent quality
+        try:
+            import modal  # noqa: F401
+        except ImportError:
+            return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
 
-            result = extract_epub(source, book_id, book_output)
+        from librarian.cloud_extract import app, extract_pdf_remote
 
-            if not result["success"]:
-                book.status = "failed"
-                session.commit()
-                return {"success": False, "error": result["error"]}
+        file_bytes = source.read_bytes()
 
-            book.status = "extracted"
-            book.converted_path = str(book_output)
+        with app.run():
+            result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
+
+        if not result["success"]:
+            book.status = "failed"
             session.commit()
+            return {"success": False, "error": result["error"]}
 
-            return {
-                "success": True,
-                "book_id": book_id,
-                "output_dir": str(book_output),
-                "method": "epub_native",
-                "blocks": result["block_count"],
-                "chapters": result["chapter_count"],
-            }
-        else:
-            # PDF extraction via Modal cloud GPU
-            try:
-                import modal  # noqa: F401
-            except ImportError:
-                return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
+        # Write output files
+        (book_output / f"{book_id}.json").write_text(result["chunks_json"])
+        if result["meta_json"]:
+            (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
+        (book_output / f"{book_id}.md").write_text(result["markdown"])
 
-            from librarian.cloud_extract import app, extract_pdf_remote
+        book.status = "extracted"
+        book.converted_path = str(book_output)
+        session.commit()
 
-            pdf_bytes = source.read_bytes()
-
-            with app.run():
-                result = extract_pdf_remote.remote(pdf_bytes, book_id, source.name)
-
-            if not result["success"]:
-                book.status = "failed"
-                session.commit()
-                return {"success": False, "error": result["error"]}
-
-            # Write output files
-            (book_output / f"{book_id}.json").write_text(result["chunks_json"])
-            if result["meta_json"]:
-                (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
-            (book_output / f"{book_id}.md").write_text(result["markdown"])
-
-            book.status = "extracted"
-            book.converted_path = str(book_output)
-            session.commit()
-
-            return {
-                "success": True,
-                "book_id": book_id,
-                "output_dir": str(book_output),
-                "method": "modal_cloud",
-            }
+        return {
+            "success": True,
+            "book_id": book_id,
+            "output_dir": str(book_output),
+            "method": "modal_cloud",
+        }
     except Exception as e:
         session.rollback()
         return {"success": False, "error": str(e)}
