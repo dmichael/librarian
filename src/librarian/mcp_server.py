@@ -394,6 +394,59 @@ def list_books(status: str | None = None) -> list[dict]:
 
 
 @mcp.tool()
+def update_book(
+    book_id: int,
+    title: str | None = None,
+    authors: list[str] | None = None,
+    subjects: list[str] | None = None,
+    library: str | None = None,
+) -> dict:
+    """Update book metadata. Use this to tag books with subjects and library.
+
+    Subjects use slash-separated taxonomy (e.g. "therapy/dbt", "cs/networking").
+    Library groups books into named collections (e.g. "therapy-core", "biology").
+
+    Args:
+        book_id: ID of the book to update
+        title: New title (if correcting)
+        authors: New author list (replaces existing)
+        subjects: Subject tags (replaces existing)
+        library: Library/collection name
+    """
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+
+        if title is not None:
+            book.title = title
+        if authors is not None:
+            book.authors = authors
+        if subjects is not None:
+            book.subjects = subjects
+        if library is not None:
+            book.library = library
+
+        session.commit()
+
+        return {
+            "success": True,
+            "book_id": book.id,
+            "title": book.title,
+            "authors": book.authors or [],
+            "subjects": book.subjects or [],
+            "library": book.library,
+        }
+    except Exception as e:
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def book_status() -> dict:
     """Pipeline statistics: book counts by status and total chunks indexed."""
     from sqlalchemy import func, text
