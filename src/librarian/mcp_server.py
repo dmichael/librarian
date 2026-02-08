@@ -482,6 +482,98 @@ def book_status() -> dict:
 
 
 @mcp.tool()
+def library_profile() -> dict:
+    """Oriented summary of library state for agent onboarding.
+
+    Returns what's available, what's well-covered, what's missing, and what
+    filter values exist — so an agent can understand the library without
+    trial-and-error discovery. Call this first when starting a new session.
+    """
+    from sqlalchemy import func
+
+    config = _get_config()
+    session = get_session(config)
+    try:
+        books = session.query(Book).order_by(Book.id).all()
+
+        # Collect all subjects and libraries in use
+        all_subjects = set()
+        all_libraries = set()
+        by_library = {}
+        by_status = {}
+        untagged = []
+
+        for b in books:
+            status = b.status or "unknown"
+            by_status[status] = by_status.get(status, 0) + 1
+
+            lib = b.library or "unassigned"
+            all_libraries.add(lib)
+            by_library.setdefault(lib, []).append({
+                "id": b.id,
+                "title": b.title,
+                "authors": b.authors or [],
+                "status": b.status,
+                "subjects": b.subjects or [],
+            })
+
+            if b.subjects:
+                for s in b.subjects:
+                    all_subjects.add(s)
+            else:
+                untagged.append({"id": b.id, "title": b.title})
+
+        # Chunk counts per book from pgvector
+        chunk_counts = {}
+        try:
+            from librarian.vectorstore import get_collection_names, get_vector_store
+
+            store = get_vector_store(config)
+            collections = get_collection_names(config)
+            raw = store.get_metadata_counts(collections["full"], "book_id")
+            chunk_counts = {int(k): v for k, v in raw.items()}
+        except Exception:
+            pass
+
+        # Build collections summary
+        collections_summary = {}
+        for lib, lib_books in by_library.items():
+            indexed = [b for b in lib_books if b["status"] == "indexed"]
+            collections_summary[lib] = {
+                "total": len(lib_books),
+                "indexed": len(indexed),
+                "books": [
+                    {
+                        "id": b["id"],
+                        "title": b["title"],
+                        "authors": b["authors"],
+                        "chunks": chunk_counts.get(b["id"], 0),
+                        "subjects": b["subjects"],
+                    }
+                    for b in indexed
+                ],
+            }
+
+        return {
+            "summary": {
+                "total_books": len(books),
+                "by_status": by_status,
+            },
+            "subjects_in_use": sorted(all_subjects),
+            "libraries_in_use": sorted(all_libraries - {"unassigned"}),
+            "collections": collections_summary,
+            "books_without_subjects": untagged,
+            "hint": (
+                "Use update_book to tag books with subjects and library. "
+                "Use search with subjects=['therapy/dbt'] or library='therapy-core' to filter. "
+                "Use upload_book to add new books to the library."
+            ),
+        }
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def upload_book(
     filename: str,
     content_base64: str,
