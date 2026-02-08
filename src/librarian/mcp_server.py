@@ -302,8 +302,10 @@ def ingest_book(
 ) -> dict:
     """Register a new book in the library. Returns the assigned book ID.
 
-    The source file should already exist on the data volume (e.g. under
-    calibre/ or intake/). This just creates the database record.
+    The source file must already exist on the data volume. Paths should start
+    with /data/librarian/ (the container mount point). If a book with the same
+    title already exists, returns the existing record instead of creating a
+    duplicate. For uploading files, prefer POST /upload instead.
 
     Args:
         title: Book title
@@ -312,8 +314,46 @@ def ingest_book(
         source_path: Absolute path to the source file on the data volume
     """
     config = _get_config()
+
+    # Validate source_path exists on disk
+    if source_path:
+        if not Path(source_path).exists():
+            return {
+                "success": False,
+                "error": f"Source file not found: {source_path}. "
+                "Paths must be accessible inside the container (e.g. /data/librarian/...). "
+                "Use POST /upload to upload files directly.",
+            }
+
     session = get_session(config)
     try:
+        # Check for duplicate by title (case-insensitive)
+        existing = session.query(Book).filter(
+            Book.title.ilike(title)
+        ).first()
+        if existing:
+            return {
+                "success": True,
+                "book_id": existing.id,
+                "title": existing.title,
+                "status": existing.status,
+                "already_exists": True,
+            }
+
+        # Check for duplicate by source_path
+        if source_path:
+            existing = session.query(Book).filter(
+                Book.source_path == source_path
+            ).first()
+            if existing:
+                return {
+                    "success": True,
+                    "book_id": existing.id,
+                    "title": existing.title,
+                    "status": existing.status,
+                    "already_exists": True,
+                }
+
         book = Book(
             title=title,
             authors=authors or [],
@@ -329,6 +369,11 @@ def ingest_book(
             "book_id": book.id,
             "title": book.title,
             "status": book.status,
+            "next_steps": [
+                f"extract_book(book_id={book.id}) — extract to searchable text via cloud GPU",
+                f"index_book(book_id={book.id}) — embed and store in vector search",
+                f"suggest_tags(book_id={book.id}) — get subject/library tag suggestions",
+            ],
         }
     except Exception as e:
         session.rollback()
@@ -414,6 +459,52 @@ def update_book(
             "authors": book.authors or [],
             "subjects": book.subjects or [],
             "library": book.library,
+        }
+    except Exception as e:
+        session.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def delete_book(book_id: int) -> dict:
+    """Delete a book record and its indexed chunks.
+
+    Removes the book from the database and deletes any associated vectors
+    from pgvector. Does NOT delete source files or extracted content from disk.
+
+    Args:
+        book_id: ID of the book to delete
+    """
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+
+        title = book.title
+
+        # Delete vectors from pgvector
+        try:
+            from librarian.vectorstore import get_collection_names, get_vector_store
+
+            store = get_vector_store(config)
+            collections = get_collection_names(config)
+            for coll in [collections["full"], collections["equations"], collections["chapters"]]:
+                store.delete_by_filter(coll, "book_id", book_id)
+        except Exception:
+            pass  # OK if vectors don't exist
+
+        session.delete(book)
+        session.commit()
+
+        return {
+            "success": True,
+            "book_id": book_id,
+            "title": title,
+            "deleted": True,
         }
     except Exception as e:
         session.rollback()
@@ -590,32 +681,35 @@ def upload_book(
     dest = intake_path / filename
     dest.write_bytes(file_bytes)
 
-    # Create book record
+    # Create book record (with duplicate check)
     book_title = title or Path(filename).stem
     fmt = suffix.lstrip(".")
 
     session = get_session(config)
     try:
+        existing = session.query(Book).filter(Book.title.ilike(book_title)).first()
+        if existing:
+            return JSONResponse({
+                "success": True,
+                "book_id": existing.id,
+                "title": existing.title,
+                "status": existing.status,
+                "already_exists": True,
+            })
+
         book = Book(
             title=book_title,
-            authors=authors or [],
+            authors=authors,
             format=fmt,
             source_path=str(dest),
             status="pending",
         )
         session.add(book)
         session.commit()
-
-        return {
-            "success": True,
-            "book_id": book.id,
-            "title": book.title,
-            "source_path": str(dest),
-            "size_bytes": len(file_bytes),
-        }
+        book_id = book.id
     except Exception as e:
         session.rollback()
-        return {"success": False, "error": str(e)}
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
     finally:
         session.close()
 
