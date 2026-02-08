@@ -1,0 +1,9 @@
+services:
+  librarian:
+    image: localhost:5000/librarian:latest
+    ports:
+      - "8811:8811"
+    env_file: .env.librarian
+    volumes:
+      - ~/data/librarian:/data/librarian
+    restart: unless-stopped

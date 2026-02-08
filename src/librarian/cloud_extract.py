@@ -50,10 +50,28 @@ if MODAL_AVAILABLE:
             "poppler-utils",  # PDF utilities
             "libgl1",         # OpenGL for image processing
             "libglib2.0-0",   # GLib
+            # weasyprint system deps (for EPUB → PDF conversion)
+            "libpango-1.0-0",
+            "libpangoft2-1.0-0",
+            "libharfbuzz0b",
+            "libffi-dev",
         )
         .pip_install(
             "marker-pdf>=1.0.0",
             "markdownify>=0.11.0",
+            "weasyprint>=60.0",  # Required for EPUB support (marker epub→pdf)
+            "ebooklib>=0.18",   # Required for EPUB support (marker epub loading)
+        )
+        .pip_install("reportlab")
+        .run_commands(
+            # Pre-download marker/surya models (~3GB) by running on a tiny test PDF
+            "python -c \""
+            "from reportlab.lib.pagesizes import letter; "
+            "from reportlab.pdfgen import canvas; "
+            "c = canvas.Canvas('/tmp/test.pdf', pagesize=letter); "
+            "c.drawString(72, 720, 'test'); c.save()\"",
+            "marker_single /tmp/test.pdf --output_dir /tmp/marker_out --output_format chunks || true",
+            "rm -rf /tmp/test.pdf /tmp/marker_out",
         )
     )
 
@@ -90,27 +108,31 @@ if MODAL_AVAILABLE:
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # Write PDF to temp file
-                pdf_path = Path(tmpdir) / "input.pdf"
+                # Preserve original extension so marker detects format correctly
+                suffix = Path(filename).suffix or ".pdf"
+                input_path = Path(tmpdir) / f"input{suffix}"
                 output_dir = Path(tmpdir) / "output"
                 output_dir.mkdir()
 
-                pdf_path.write_bytes(pdf_bytes)
+                input_path.write_bytes(pdf_bytes)
 
-                # Run marker_single - don't capture output so it streams to Modal logs
+                # Run marker_single - capture stderr for error reporting
                 cmd = [
                     "marker_single",
-                    str(pdf_path),
+                    str(input_path),
                     "--output_dir", str(output_dir),
                     "--output_format", "chunks",
                 ]
 
                 print(f"[{book_id}] Starting marker extraction: {filename}", flush=True)
-                proc = subprocess.run(cmd)  # Let stdout/stderr flow to Modal logs
+                proc = subprocess.run(cmd, capture_output=True, text=True)
                 print(f"[{book_id}] Marker finished with code: {proc.returncode}", flush=True)
+                if proc.stdout:
+                    print(proc.stdout, flush=True)
 
                 if proc.returncode != 0:
-                    result["error"] = f"marker_single failed with code {proc.returncode}"
+                    stderr = proc.stderr[:500] if proc.stderr else ""
+                    result["error"] = f"marker_single failed with code {proc.returncode}: {stderr}"
                     return result
 
                 # Find output files (marker creates subdirectory with variable name)

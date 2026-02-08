@@ -1,5 +1,6 @@
 """Configuration loading."""
 
+import os
 from pathlib import Path
 
 import yaml
@@ -21,7 +22,22 @@ def load_config() -> dict:
     """Load configuration from settings file."""
     config_path = find_config_file()
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+
+    # Environment variable overrides (for Docker / production)
+    if url := os.getenv("LIBRARIAN_DB_URL"):
+        config.setdefault("vector_store", {})["pgvector_url"] = url
+        config["vector_store"]["backend"] = "pgvector"
+
+    if device := os.getenv("LIBRARIAN_EMBEDDING_DEVICE"):
+        config.setdefault("embedding", {})["device"] = device
+
+    if data_root := os.getenv("LIBRARIAN_DATA_ROOT"):
+        config["output_path"] = f"{data_root}/converted"
+        config["library_path"] = f"{data_root}/calibre"
+        config["intake_path"] = f"{data_root}/intake/ebooks"
+
+    return config
 
 
 def expand_path(path: str) -> Path:

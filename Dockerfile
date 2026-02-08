@@ -1,0 +1,46 @@
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml .
+COPY src/ src/
+COPY config/settings.yaml config/settings.yaml
+
+RUN pip install --no-cache-dir -e ".[serve]"
+
+# Bake embedding model into image (~400MB, avoids runtime download)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-en-v1.5')"
+
+# --- Runtime stage ---
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Runtime deps only (no build-essential)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpq5 wget xz-utils \
+        libegl1 libopengl0 libxcb-cursor0 libfreetype6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Calibre (headless — ebook-convert + calibredb for format conversion / DRM)
+RUN wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin install_dir=/opt
+ENV PATH="/opt/calibre:${PATH}"
+
+# Copy installed Python packages and app from builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /app /app
+
+# Copy baked embedding model from builder
+COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
+
+EXPOSE 8811
+
+ENV LIBRARIAN_EMBEDDING_DEVICE=cpu
+
+CMD ["python", "-m", "librarian.mcp_server"]

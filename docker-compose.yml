@@ -1,0 +1,9 @@
+services:
+  librarian:
+    build: .
+    image: librarian:latest
+    ports:
+      - "8811:8811"
+    env_file: .env
+    volumes:
+      - ~/data/librarian:/data/librarian

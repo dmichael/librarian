@@ -28,3 +28,4 @@ tools/plugins/
 .idea/
 .vscode/
 *.swp
+.env

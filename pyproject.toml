@@ -32,6 +32,18 @@ pgvector = [
     "llama-index-vector-stores-postgres>=0.6.0",
     "psycopg[binary]>=3.1.0",
 ]  # PostgreSQL pgvector backend
+serve = [
+    "mcp[cli]>=1.20.0",
+    "psycopg[binary]>=3.1.0",
+    "psycopg2-binary>=2.9.0",
+    "llama-index-vector-stores-postgres>=0.6.0",
+    "sqlalchemy>=2.0.0",
+    "modal>=0.60.0",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12.0",
+    "markdownify>=0.13.0",
+    "pylatexenc>=2.10",
+]  # MCP server with full pipeline
 
 [project.scripts]
 # Main commands
@@ -57,6 +69,8 @@ librarian-toc = "librarian.stats:toc_main"
 librarian-ingest = "librarian.ingest:main"
 librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
 librarian-kindle-extract = "librarian.kindle_extract:main"
+# MCP server
+librarian-serve = "librarian.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

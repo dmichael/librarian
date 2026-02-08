@@ -1,0 +1,13 @@
+.git/
+.venv/
+.worktrees/
+__pycache__/
+*.pyc
+*.egg-info/
+tests/
+docs/
+specs/
+scripts/
+skills/
+*.md
+!config/settings.yaml

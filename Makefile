@@ -9,7 +9,7 @@
 
 VENV := .venv/bin
 
-.PHONY: all status intake extract extract-cloud index clean help
+.PHONY: all status intake extract extract-cloud index clean help build run push deploy release
 
 # Default: run full pipeline
 all: intake extract index
@@ -61,3 +61,35 @@ clean-extracted:
 
 clean-extracted-confirm:
 	rm -rf ~/data/librarian/converted/*
+
+# === Container ===
+REGISTRY ?= agents.local:5000
+IMAGE ?= librarian
+TAG ?= latest
+REMOTE_IMAGE = $(REGISTRY)/$(IMAGE)
+
+build:
+	docker build -t $(IMAGE):$(TAG) .
+
+run:
+	docker compose up
+
+# Tag, push to registry, pull and run on agents.local
+push: build
+	docker tag $(IMAGE):$(TAG) $(REMOTE_IMAGE):$(TAG)
+	docker push $(REMOTE_IMAGE):$(TAG)
+
+deploy: push
+	ssh agents.local 'cd ~/librarian && \
+		git pull && \
+		export PATH="/Applications/Docker.app/Contents/Resources/bin:$$PATH" && \
+		docker compose -f docker-compose.prod.yml pull && \
+		docker compose -f docker-compose.prod.yml up -d'
+	@echo "Deployed $(REMOTE_IMAGE):$(TAG) on agents.local"
+
+# Release a versioned tag (e.g. make release V=0.1.0)
+release:
+	@test -n "$(V)" || (echo "Usage: make release V=0.1.0" && exit 1)
+	docker tag $(IMAGE):$(TAG) $(REMOTE_IMAGE):$(V)
+	docker push $(REMOTE_IMAGE):$(V)
+	@echo "Pushed $(REMOTE_IMAGE):$(V)"
