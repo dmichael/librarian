@@ -80,7 +80,7 @@ push: build
 	docker push $(REMOTE_IMAGE):$(TAG)
 
 deploy: push
-	ssh agents.local 'cd ~/librarian && \
+	ssh agents.local 'cd ~/projects/librarian && \
 		git pull && \
 		export PATH="/Applications/Docker.app/Contents/Resources/bin:$$PATH" && \
 		docker compose -f docker-compose.prod.yml pull && \
