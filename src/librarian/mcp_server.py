@@ -621,6 +621,128 @@ def upload_book(
 
 
 # ---------------------------------------------------------------------------
+# Tag suggestion keywords → subjects
+# ---------------------------------------------------------------------------
+
+_TAG_RULES = [
+    # therapy
+    (["dialectical behavior", "dbt", "linehan", "distress tolerance", "emotion regulation"],
+     "therapy/dbt"),
+    (["cognitive behavioral", "cognitive behaviour", "cbt", "automatic thoughts", "thought record"],
+     "therapy/cbt"),
+    (["acceptance and commitment", "act ", "psychological flexibility", "defusion", "russ harris"],
+     "therapy/act"),
+    (["internal family systems", "ifs", "parts work", "self-energy", "richard schwartz"],
+     "therapy/ifs"),
+    (["existential", "logotherapy", "meaning-centered", "irvin yalom"],
+     "therapy/existential"),
+    (["psychotherapy", "therapeutic", "clinician", "therapist", "mental health"],
+     "therapy"),
+    # biology / science
+    (["biology", "evolution", "ecology", "species", "organism"],
+     "biology"),
+    (["neuroscience", "brain", "neural", "cortex", "synapse"],
+     "biology/neuroscience"),
+    (["bioacoustics", "animal communication", "vocalization", "call structure"],
+     "biology/bioacoustics"),
+    # cs / tech
+    (["algorithm", "data structure", "computer science", "programming"],
+     "cs"),
+    (["networking", "tcp", "protocol", "routing", "packet"],
+     "cs/networking"),
+    (["machine learning", "deep learning", "neural network", "training data"],
+     "cs/ml"),
+    (["cryptography", "bitcoin", "blockchain", "distributed ledger"],
+     "cs/crypto"),
+]
+
+_LIBRARY_RULES = [
+    (["therapy", "therapeutic", "psychotherapy", "clinician", "mental health",
+      "dbt", "cbt", "act ", "ifs", "counseling"], "therapy-core"),
+    (["biology", "ecology", "evolution", "species", "organism", "bioacoustics"],
+     "biology"),
+    (["computer", "programming", "algorithm", "software", "networking"],
+     "cs"),
+]
+
+
+@mcp.tool()
+def suggest_tags(book_id: int) -> dict:
+    """Suggest subjects and library for a book based on its content.
+
+    Reads the title, authors, and first ~2000 tokens of extracted text, then
+    matches against the existing taxonomy using keyword heuristics. Returns
+    suggestions that can be applied via update_book.
+
+    Args:
+        book_id: ID of the book to analyze
+    """
+    from librarian.config import expand_path
+
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+
+        # Build text sample from title + authors + extracted content
+        parts = [book.title or ""]
+        if book.authors:
+            parts.extend(book.authors)
+
+        # Read first ~2000 tokens from extracted markdown
+        output_path = expand_path(config["output_path"])
+        md_file = output_path / str(book_id) / f"{book_id}.md"
+        if md_file.exists():
+            text = md_file.read_text(errors="replace")[:8000]  # ~2000 tokens
+            parts.append(text)
+
+        sample = " ".join(parts).lower()
+
+        # Match subjects
+        matched_subjects = []
+        for keywords, subject in _TAG_RULES:
+            if any(kw in sample for kw in keywords):
+                matched_subjects.append(subject)
+
+        # Deduplicate: if we matched therapy/dbt, drop bare "therapy"
+        specific = [s for s in matched_subjects if "/" in s]
+        if specific:
+            matched_subjects = [s for s in matched_subjects if "/" in s or
+                                not any(sp.startswith(s + "/") for sp in specific)]
+
+        # Match library
+        suggested_library = None
+        for keywords, library in _LIBRARY_RULES:
+            if any(kw in sample for kw in keywords):
+                suggested_library = library
+                break
+
+        # Get existing taxonomy for context
+        all_subjects = set()
+        for b in session.query(Book).all():
+            if b.subjects:
+                all_subjects.update(b.subjects)
+
+        return {
+            "success": True,
+            "book_id": book_id,
+            "title": book.title,
+            "current_subjects": book.subjects or [],
+            "current_library": book.library,
+            "suggested_subjects": matched_subjects,
+            "suggested_library": suggested_library,
+            "existing_taxonomy": sorted(all_subjects),
+            "hint": "Review suggestions and apply with update_book(book_id, subjects=..., library=...)",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
