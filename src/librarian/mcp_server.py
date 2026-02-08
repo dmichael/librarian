@@ -621,6 +621,96 @@ def upload_book(
 
 
 # ---------------------------------------------------------------------------
+# HTTP upload endpoint (not MCP — for agents that can curl/POST files)
+# ---------------------------------------------------------------------------
+
+
+@mcp.custom_route("/upload", methods=["POST"])
+async def handle_upload(request):
+    """Upload a book file via multipart POST.
+
+    curl -F file=@book.pdf -F title="Book Title" -F authors="A, B" \
+         http://agents.local:8811/upload
+
+    Returns JSON with book_id and next pipeline steps.
+    """
+    from starlette.responses import JSONResponse
+
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        return JSONResponse(
+            {"success": False, "error": "Content-Type must be multipart/form-data"},
+            status_code=400,
+        )
+
+    form = await request.form()
+
+    upload = form.get("file")
+    if not upload:
+        return JSONResponse(
+            {"success": False, "error": "Missing 'file' field"},
+            status_code=400,
+        )
+
+    filename = upload.filename
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".pdf", ".epub"}:
+        return JSONResponse(
+            {"success": False, "error": f"Unsupported format {suffix}, need .pdf or .epub"},
+            status_code=400,
+        )
+
+    file_bytes = await upload.read()
+
+    title = form.get("title") or Path(filename).stem
+    authors_raw = form.get("authors", "")
+    authors = [a.strip() for a in authors_raw.split(",") if a.strip()] if authors_raw else []
+
+    # Write to intake directory
+    from librarian.config import expand_path
+
+    config = _get_config()
+    intake_path = expand_path(config.get("intake_path", "~/data/librarian/intake/ebooks"))
+    intake_path.mkdir(parents=True, exist_ok=True)
+    dest = intake_path / filename
+    dest.write_bytes(file_bytes)
+
+    # Create book record
+    session = get_session(config)
+    try:
+        book = Book(
+            title=title,
+            authors=authors,
+            format=suffix.lstrip("."),
+            source_path=str(dest),
+            status="pending",
+        )
+        session.add(book)
+        session.commit()
+        book_id = book.id
+    except Exception as e:
+        session.rollback()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    finally:
+        session.close()
+
+    return JSONResponse({
+        "success": True,
+        "book_id": book_id,
+        "title": title,
+        "authors": authors,
+        "source_path": str(dest),
+        "size_bytes": len(file_bytes),
+        "next_steps": [
+            f"extract_book(book_id={book_id}) — extract to searchable text via cloud GPU",
+            f"index_book(book_id={book_id}) — embed and store in vector search",
+            f"suggest_tags(book_id={book_id}) — get subject/library tag suggestions",
+            f"update_book(book_id={book_id}, subjects=..., library=...) — apply tags",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
 # Tag suggestion keywords → subjects
 # ---------------------------------------------------------------------------
 
