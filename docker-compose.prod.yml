@@ -1,6 +1,6 @@
 services:
   librarian:
-    image: localhost:5000/librarian:0.4.0
+    image: localhost:5000/librarian:0.5.0
     ports:
       - "8811:8811"
     env_file: .env.librarian
