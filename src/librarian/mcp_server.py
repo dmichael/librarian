@@ -305,7 +305,8 @@ def ingest_book(
     The source file must already exist on the data volume. Paths should start
     with /data/librarian/ (the container mount point). If a book with the same
     title already exists, returns the existing record instead of creating a
-    duplicate. For uploading files, prefer POST /upload instead.
+    duplicate. To upload new files, call upload_book() for the HTTP endpoint
+    and curl example.
 
     Args:
         title: Book title
@@ -633,7 +634,7 @@ def library_profile() -> dict:
             "hint": (
                 "Use update_book to tag books with subjects and library. "
                 "Use search with subjects=['therapy/dbt'] or library='therapy-core' to filter. "
-                "Use upload_book to add new books to the library."
+                "Call upload_book() to get the HTTP upload endpoint and curl example for adding new books."
             ),
         }
     finally:
@@ -641,77 +642,34 @@ def library_profile() -> dict:
 
 
 @mcp.tool()
-def upload_book(
-    filename: str,
-    content_base64: str,
-    title: str | None = None,
-    authors: list[str] | None = None,
-) -> dict:
-    """Upload a book file, register it, and prepare it for extraction.
+def upload_book() -> dict:
+    """Get upload instructions for adding a new book to the library.
 
-    Accepts a base64-encoded file (PDF or EPUB), writes it to the data volume,
-    and creates a book record. Returns the book ID for use with extract_book.
-
-    Args:
-        filename: Original filename with extension (e.g. "book.pdf")
-        content_base64: Base64-encoded file content
-        title: Book title (defaults to filename stem if not provided)
-        authors: List of author names
+    Call this to learn how to upload files. Books are uploaded via HTTP POST
+    (multipart/form-data), then processed with extract_book and index_book.
+    Do NOT pass file contents through MCP — use the HTTP endpoint directly.
     """
-    import base64
-
     config = _get_config()
-    from librarian.config import expand_path
+    host = config.get("host", "agents.local")
+    port = config.get("port", 8811)
+    endpoint = f"http://{host}:{port}/upload"
 
-    # Validate format
-    suffix = Path(filename).suffix.lower()
-    supported = {".pdf", ".epub"}
-    if suffix not in supported:
-        return {"success": False, "error": f"Unsupported format {suffix}, need PDF or EPUB"}
-
-    # Decode content
-    try:
-        file_bytes = base64.b64decode(content_base64)
-    except Exception as e:
-        return {"success": False, "error": f"Invalid base64 content: {e}"}
-
-    # Write to intake directory
-    intake_path = expand_path(config.get("intake_path", "~/data/librarian/intake/ebooks"))
-    intake_path.mkdir(parents=True, exist_ok=True)
-    dest = intake_path / filename
-    dest.write_bytes(file_bytes)
-
-    # Create book record (with duplicate check)
-    book_title = title or Path(filename).stem
-    fmt = suffix.lstrip(".")
-
-    session = get_session(config)
-    try:
-        existing = session.query(Book).filter(Book.title.ilike(book_title)).first()
-        if existing:
-            return JSONResponse({
-                "success": True,
-                "book_id": existing.id,
-                "title": existing.title,
-                "status": existing.status,
-                "already_exists": True,
-            })
-
-        book = Book(
-            title=book_title,
-            authors=authors,
-            format=fmt,
-            source_path=str(dest),
-            status="pending",
-        )
-        session.add(book)
-        session.commit()
-        book_id = book.id
-    except Exception as e:
-        session.rollback()
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-    finally:
-        session.close()
+    return {
+        "endpoint": endpoint,
+        "method": "POST",
+        "content_type": "multipart/form-data",
+        "fields": {
+            "file": "required — PDF or EPUB file",
+            "title": "optional — defaults to filename",
+            "authors": "optional — comma-separated names",
+        },
+        "example": f"curl -F file=@book.pdf -F title='My Book' {endpoint}",
+        "note": (
+            "Returns book_id on success (with dedup — re-uploading same title "
+            "returns existing record). Then call extract_book(book_id) and "
+            "index_book(book_id) to process."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +685,8 @@ async def handle_upload(request):
          http://agents.local:8811/upload
 
     Returns JSON with book_id and next pipeline steps.
+    Deduplicates by title and source_path — re-uploading the same book
+    returns the existing record instead of creating a duplicate.
     """
     from starlette.responses import JSONResponse
 
@@ -769,9 +729,26 @@ async def handle_upload(request):
     dest = intake_path / filename
     dest.write_bytes(file_bytes)
 
-    # Create book record
+    # Duplicate detection, then create book record
     session = get_session(config)
     try:
+        # Check by title (case-insensitive)
+        existing = session.query(Book).filter(Book.title.ilike(title)).first()
+        if not existing:
+            # Check by source_path
+            existing = session.query(Book).filter(
+                Book.source_path == str(dest)
+            ).first()
+
+        if existing:
+            return JSONResponse({
+                "success": True,
+                "book_id": existing.id,
+                "title": existing.title,
+                "status": existing.status,
+                "already_exists": True,
+            })
+
         book = Book(
             title=title,
             authors=authors,
