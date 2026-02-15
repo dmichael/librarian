@@ -435,6 +435,8 @@ def update_book(
         subjects: Subject tags (replaces existing)
         library: Library/collection name
     """
+    import json
+
     config = _get_config()
     session = get_session(config)
     try:
@@ -453,6 +455,27 @@ def update_book(
 
         session.commit()
 
+        # Propagate searchable metadata to pgvector chunks
+        vector_updates = {}
+        if library is not None:
+            vector_updates["library"] = library
+        if subjects is not None:
+            vector_updates["subjects"] = json.dumps(subjects)
+
+        chunks_updated = 0
+        if vector_updates:
+            try:
+                from librarian.vectorstore import get_collection_names, get_vector_store
+
+                store = get_vector_store(config)
+                collections = get_collection_names(config)
+                for coll in [collections["full"], collections["equations"], collections["chapters"]]:
+                    chunks_updated += store.update_metadata_by_book_id(
+                        coll, book_id, vector_updates
+                    )
+            except Exception as e:
+                log.warning("Failed to propagate metadata to vectors: %s", e)
+
         return {
             "success": True,
             "book_id": book.id,
@@ -460,6 +483,7 @@ def update_book(
             "authors": book.authors or [],
             "subjects": book.subjects or [],
             "library": book.library,
+            "chunks_updated": chunks_updated,
         }
     except Exception as e:
         session.rollback()

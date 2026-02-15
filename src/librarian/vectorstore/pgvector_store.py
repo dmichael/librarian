@@ -213,6 +213,38 @@ class PgvectorStore:
         except Exception:
             return []
 
+    def update_metadata_by_book_id(
+        self, collection_name: str, book_id: int, updates: dict[str, str]
+    ) -> int:
+        """Update metadata fields on all chunks belonging to a book.
+
+        Uses jsonb_set to patch specific keys without touching the rest.
+        Returns the number of rows updated.
+        """
+        if not updates or not self.collection_exists(collection_name):
+            return 0
+
+        conn = self._get_psycopg_conn()
+        table = f"data_{collection_name}"
+
+        # Build chained jsonb_set: jsonb_set(jsonb_set(metadata_, ...), ...)
+        expr = "metadata_"
+        params = []
+        for key, value in updates.items():
+            expr = f"jsonb_set({expr}, %s, %s::jsonb)"
+            params.append(f"{{{key}}}")
+            # JSON-encode the value
+            import json
+            params.append(json.dumps(value))
+
+        params.append(str(book_id))
+        cur = conn.execute(
+            f"UPDATE {table} SET metadata_ = {expr} "
+            f"WHERE metadata_->>'book_id' = %s",
+            params,
+        )
+        return cur.rowcount
+
     def requires_lock(self) -> bool:
         """PostgreSQL handles concurrency, no external lock needed."""
         return False

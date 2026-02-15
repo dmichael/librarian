@@ -106,6 +106,21 @@ class LibrarianVectorStore(Protocol):
         """
         ...
 
+    def update_metadata_by_book_id(
+        self, collection_name: str, book_id: int, updates: dict[str, str]
+    ) -> int:
+        """Update metadata fields on all chunks belonging to a book.
+
+        Args:
+            collection_name: Name of the collection
+            book_id: Book ID to match
+            updates: Dict of {field: value} to set in chunk metadata
+
+        Returns:
+            Number of rows updated
+        """
+        ...
+
     def get_documents_by_filter(
         self, collection_name: str, filters: dict[str, any]
     ) -> list[tuple[str, dict]]:
