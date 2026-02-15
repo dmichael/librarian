@@ -127,6 +127,55 @@ def search(
 
 
 @mcp.tool()
+def text_search(
+    query: str,
+    book_id: int | None = None,
+    library: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Literal text search — finds chunks containing an exact string.
+
+    Use this for part numbers, error codes, specific values, or any query
+    where you need an exact substring match rather than semantic similarity.
+    Case-insensitive.
+
+    Args:
+        query: Exact text to search for (case-insensitive substring match)
+        book_id: Restrict to a specific book ID
+        library: Restrict to a named library
+        limit: Maximum results to return (default 10)
+    """
+    from librarian.vectorstore import get_collection_names, get_vector_store
+
+    config = _get_config()
+    store = get_vector_store(config)
+    collections = get_collection_names(config)
+
+    rows = store.text_search(
+        collections["full"],
+        query,
+        book_id=book_id,
+        library=library,
+        limit=limit,
+    )
+
+    results = []
+    for text, meta in rows:
+        results.append({
+            "text": text,
+            "title": meta.get("title", "Unknown"),
+            "authors": meta.get("authors", ""),
+            "book_id": meta.get("book_id"),
+            "page": meta.get("page"),
+            "chapter_num": meta.get("chapter_num"),
+            "chapter_title": meta.get("chapter_title", ""),
+            "library": meta.get("library", ""),
+        })
+
+    return results
+
+
+@mcp.tool()
 def index_book(book_id: int) -> dict:
     """Index an extracted book — embed chunks and store in pgvector.
 

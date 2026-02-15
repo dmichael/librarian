@@ -213,6 +213,45 @@ class PgvectorStore:
         except Exception:
             return []
 
+    def text_search(
+        self,
+        collection_name: str,
+        query: str,
+        book_id: int | None = None,
+        library: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple[str, dict]]:
+        """Literal text search using SQL ILIKE.
+
+        Finds chunks containing the exact query string (case-insensitive).
+        Useful for part numbers, error codes, and other literal values that
+        semantic search can't find.
+
+        Returns list of (text, metadata) tuples.
+        """
+        if not self.collection_exists(collection_name):
+            return []
+
+        conn = self._get_psycopg_conn()
+        table = f"data_{collection_name}"
+
+        conditions = ["text ILIKE %s"]
+        params: list = [f"%{query}%"]
+
+        if book_id is not None:
+            conditions.append("metadata_->>'book_id' = %s")
+            params.append(str(book_id))
+        if library:
+            conditions.append("metadata_->>'library' = %s")
+            params.append(library)
+
+        where = " AND ".join(conditions)
+        cur = conn.execute(
+            f"SELECT text, metadata_ FROM {table} WHERE {where} LIMIT %s",
+            params + [limit],
+        )
+        return [(row[0] or "", dict(row[1]) if row[1] else {}) for row in cur.fetchall()]
+
     def update_metadata_by_book_id(
         self, collection_name: str, book_id: int, updates: dict[str, str]
     ) -> int:
