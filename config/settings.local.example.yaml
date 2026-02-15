@@ -1,29 +1,28 @@
 # Local overrides for this machine.
 #
-# `src/librarian/config.py` loads this file in preference to `config/settings.yaml`.
-# Keep this file uncommitted by copying it to `config/settings.local.yaml`.
+# Copy to config/settings.local.yaml (gitignored) and edit as needed.
+# These values override config/settings.yaml.
+# Environment variables (LIBRARIAN_DB_URL, etc.) override both files.
 
-library_path: ~/data/librarian/calibre
-output_path: ~/data/librarian/converted
+# PostgreSQL connection (override with LIBRARIAN_DB_URL env var)
+vector_store:
+  backend: pgvector
+  pgvector_url: postgresql://localhost:5432/librarian
 
-source_paths:
-  - ~/data/librarian/source
-
+# Embedding device: cpu, mps (Apple Silicon), or cuda (NVIDIA)
 embedding:
   model: BAAI/bge-base-en-v1.5
-  device: mps
+  device: cpu
 
-vector_store:
-  type: qdrant
-  path: ~/data/librarian/qdrant
-  collection: librarian_full
+# Data paths (override with LIBRARIAN_DATA_ROOT env var)
+# library_path: ~/data/librarian/calibre
+# output_path: ~/data/librarian/converted
+# intake_path: ~/data/librarian/intake/ebooks
 
-chunking:
-  chunk_size: 512
-  chunk_overlap: 50
+# Classification LLM (optional — for librarian-classify)
+# classification:
+#   provider: ollama
+#   model: llama3.2
 
-classification:
-  provider: ollama
-  model: llama3.2
-  sample_size: 5000
-
+# Kindle DRM (optional — device serial for DRM decryption)
+# kindle_serial: YOUR_DEVICE_SERIAL

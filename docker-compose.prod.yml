@@ -1,6 +1,14 @@
+# Production compose — pulls from a registry.
+#
+# Usage:
+#   1. Push your image:  make push REGISTRY=myregistry:5000
+#   2. Edit image tag below to match
+#   3. Create .env.librarian with LIBRARIAN_DB_URL, MODAL_TOKEN_ID, etc.
+#   4. docker compose -f docker-compose.prod.yml up -d
+
 services:
   librarian:
-    image: localhost:5000/librarian:0.7.0
+    image: librarian:latest
     ports:
       - "8811:8811"
     env_file: .env.librarian

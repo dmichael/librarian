@@ -11,7 +11,7 @@ from librarian.vectorstore.protocol import LibrarianVectorStore
 from librarian.vectorstore.qdrant_file import QdrantFileStore
 
 
-def _pg_reachable(host="agents.local", port=5432, timeout=2) -> bool:
+def _pg_reachable(host="localhost", port=5432, timeout=2) -> bool:
     """Check if PostgreSQL is reachable via TCP."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -258,13 +258,13 @@ class TestChromaStore:
         assert temp_chroma_store.collection_exists("new_collection") is True
 
 
-@pytest.mark.skipif(not _pg_reachable(), reason="PostgreSQL on agents.local not reachable")
+@pytest.mark.skipif(not _pg_reachable(), reason="PostgreSQL on localhost not reachable")
 class TestPgvectorStore:
     """Tests for PgvectorStore backend (requires PostgreSQL with pgvector)."""
 
     @pytest.fixture
     def pg_store(self):
-        """Create a PgvectorStore pointing at agents.local."""
+        """Create a PgvectorStore pointing at localhost."""
         try:
             from librarian.vectorstore.pgvector_store import PgvectorStore, PGVECTOR_AVAILABLE
         except ImportError:
@@ -276,7 +276,7 @@ class TestPgvectorStore:
             return
 
         store = PgvectorStore(
-            connection_string="postgresql://dmichael@agents.local:5432/librarian",
+            connection_string="postgresql://localhost:5432/librarian",
             embed_dim=768,
             default_collection="test_collection",
         )

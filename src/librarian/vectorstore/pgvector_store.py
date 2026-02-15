@@ -42,7 +42,7 @@ class PgvectorStore:
 
     def __init__(
         self,
-        connection_string: str = "postgresql://dmichael@localhost:5432/librarian",
+        connection_string: str = "postgresql://localhost:5432/librarian",
         embed_dim: int = 768,
         default_collection: str = "librarian_full",
     ):

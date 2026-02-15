@@ -674,7 +674,7 @@ def upload_book() -> dict:
     Do NOT pass file contents through MCP — use the HTTP endpoint directly.
     """
     config = _get_config()
-    host = config.get("host", "agents.local")
+    host = config.get("host", "localhost")
     port = config.get("port", 8811)
     endpoint = f"http://{host}:{port}/upload"
 
@@ -706,7 +706,7 @@ async def handle_upload(request):
     """Upload a book file via multipart POST.
 
     curl -F file=@book.pdf -F title="Book Title" -F authors="A, B" \
-         http://agents.local:8811/upload
+         http://localhost:8811/upload
 
     Returns JSON with book_id and next pipeline steps.
     Deduplicates by title and source_path — re-uploading the same book

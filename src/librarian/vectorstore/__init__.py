@@ -82,7 +82,7 @@ def get_vector_store(
 
         return PgvectorStore(
             connection_string=vs_config.get(
-                "pgvector_url", "postgresql://dmichael@localhost:5432/librarian"
+                "pgvector_url", "postgresql://localhost:5432/librarian"
             ),
             embed_dim=config.get("embedding", {}).get("dim", 768),
             default_collection=default_collection,

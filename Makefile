@@ -24,6 +24,8 @@ help:
 	@echo "  make extract      Extract books locally (slow, ~10h/book)"
 	@echo "  make extract-cloud Extract on Modal A100s (fast, parallel)"
 	@echo "  make index        Index extracted content to vector store"
+	@echo "  make build        Build Docker image"
+	@echo "  make run          Run with docker compose"
 	@echo ""
 	@echo "Cloud extraction requires: pip install -e '.[cloud]' && modal setup"
 
@@ -63,10 +65,8 @@ clean-extracted-confirm:
 	rm -rf ~/data/librarian/converted/*
 
 # === Container ===
-REGISTRY ?= agents.local:5000
 IMAGE ?= librarian
 TAG ?= latest
-REMOTE_IMAGE = $(REGISTRY)/$(IMAGE)
 
 build:
 	docker build -t $(IMAGE):$(TAG) .
@@ -74,22 +74,19 @@ build:
 run:
 	docker compose up
 
-# Tag, push to registry, pull and run on agents.local
+# Push to a registry (set REGISTRY env var, e.g. REGISTRY=myregistry.example.com:5000)
 push: build
-	docker tag $(IMAGE):$(TAG) $(REMOTE_IMAGE):$(TAG)
-	docker push $(REMOTE_IMAGE):$(TAG)
+ifdef REGISTRY
+	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(TAG)
+	docker push $(REGISTRY)/$(IMAGE):$(TAG)
+else
+	@echo "Set REGISTRY to push. Example: make push REGISTRY=myregistry:5000"
+endif
 
-deploy: push
-	ssh agents.local 'cd ~/projects/librarian && \
-		git pull && \
-		export PATH="/Applications/Docker.app/Contents/Resources/bin:$$PATH" && \
-		docker compose -f docker-compose.prod.yml pull && \
-		docker compose -f docker-compose.prod.yml up -d'
-	@echo "Deployed $(REMOTE_IMAGE):$(TAG) on agents.local"
-
-# Release a versioned tag (e.g. make release V=0.1.0)
+# Release a versioned tag (e.g. make release V=0.1.0 REGISTRY=myregistry:5000)
 release:
-	@test -n "$(V)" || (echo "Usage: make release V=0.1.0" && exit 1)
-	docker tag $(IMAGE):$(TAG) $(REMOTE_IMAGE):$(V)
-	docker push $(REMOTE_IMAGE):$(V)
-	@echo "Pushed $(REMOTE_IMAGE):$(V)"
+	@test -n "$(V)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
+	@test -n "$(REGISTRY)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
+	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(V)
+	docker push $(REGISTRY)/$(IMAGE):$(V)
+	@echo "Pushed $(REGISTRY)/$(IMAGE):$(V)"

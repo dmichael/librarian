@@ -1,30 +1,30 @@
 # Librarian Configuration
+#
+# This file ships with generic defaults. For machine-specific overrides,
+# copy config/settings.local.example.yaml → config/settings.local.yaml
+# and edit as needed. Environment variables override both files.
 
 # =============================================================================
-# Data Paths (all source data lives in ~/data/librarian/)
+# Data Paths
 # =============================================================================
 
 library_path: ~/data/librarian/calibre           # Calibre library (books + metadata)
 intake_path: ~/data/librarian/intake/ebooks      # Drop zone for PDFs/EPUBs
-kindle_intake_path: ~/data/librarian/intake/kindle  # Synced from Kindle device
-captures_path: ~/data/librarian/intake/captures  # Screenshots for manual OCR workflow
+kindle_intake_path: ~/data/librarian/intake/kindle
+captures_path: ~/data/librarian/intake/captures
 
 # Extracted text output (intermediate processing)
 output_path: ~/data/librarian/converted
 
-# Pipeline state tracked in Calibre custom columns:
-# - *status: imported, drm_failed, extracted, indexed
-# - *format_type: pdf, epub, kindle
-# - *drm_status: none, stripped, requires_manual
-# - *drm_diagnosis: JSON with failure details
-
 # =============================================================================
 # Vector Store (PostgreSQL + pgvector)
 # =============================================================================
+#
+# Override with LIBRARIAN_DB_URL env var.
 
 vector_store:
   backend: pgvector
-  pgvector_url: postgresql://dmichael@agents.local:5432/librarian
+  pgvector_url: postgresql://localhost:5432/librarian
 
   # Collection names
   collection: librarian_full
@@ -36,9 +36,9 @@ vector_store:
 # =============================================================================
 
 embedding:
-  model: BAAI/bge-base-en-v1.5  # Good balance of quality/speed for Apple Silicon
+  model: BAAI/bge-base-en-v1.5
   dim: 768
-  device: mps  # Apple Silicon GPU, or "cpu" for fallback
+  device: cpu  # cpu, mps (Apple Silicon), or cuda
 
 # =============================================================================
 # Chunking
@@ -47,12 +47,6 @@ embedding:
 chunking:
   chunk_size: 512   # tokens
   chunk_overlap: 50  # tokens
-
-# =============================================================================
-# Kindle DRM
-# =============================================================================
-
-kindle_serial: GR73H30154540QV4  # Device serial for DRM decryption
 
 # =============================================================================
 # Classification LLM

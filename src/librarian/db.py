@@ -3,7 +3,7 @@
 Provides the books table as the source of truth for the librarian pipeline,
 replacing Calibre's SQLite for ID assignment and pipeline state tracking.
 
-Uses the same PostgreSQL instance as pgvector (agents.local:5432/librarian).
+Uses the same PostgreSQL instance as pgvector (configured via LIBRARIAN_DB_URL).
 """
 
 from datetime import datetime, timezone
