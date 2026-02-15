@@ -33,6 +33,7 @@ run the pipeline, tag content, and search — all through tool calls.
 | Tool | Description |
 |------|-------------|
 | `search` | Semantic search across indexed books. Filter by subject, library, or book_id. |
+| `text_search` | Literal substring search for part numbers, error codes, exact strings. |
 | `upload_book` | Returns the HTTP upload endpoint URL and a curl example. |
 | `ingest_book` | Register a book already on the data volume (by path). |
 | `extract_book` | Extract a book to markdown via Modal cloud GPU. |
