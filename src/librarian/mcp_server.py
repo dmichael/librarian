@@ -723,9 +723,12 @@ def upload_book() -> dict:
     Do NOT pass file contents through MCP — use the HTTP endpoint directly.
     """
     config = _get_config()
-    host = config.get("host", "localhost")
-    port = config.get("port", 8811)
-    endpoint = f"http://{host}:{port}/upload"
+    base = config.get("public_url")
+    if not base:
+        host = config.get("host", "localhost")
+        port = config.get("port", 8811)
+        base = f"http://{host}:{port}"
+    endpoint = f"{base.rstrip('/')}/upload"
 
     return {
         "endpoint": endpoint,
