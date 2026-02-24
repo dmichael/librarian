@@ -17,7 +17,7 @@ import logging
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from librarian.config import load_config
 from librarian.db import Book, get_session
@@ -176,7 +176,7 @@ def text_search(
 
 
 @mcp.tool()
-def index_book(book_id: int) -> dict:
+async def index_book(book_id: int, ctx: Context = None) -> dict:
     """Index an extracted book — embed chunks and store in pgvector.
 
     The book must already be extracted (converted/ directory must exist with
@@ -213,6 +213,9 @@ def index_book(book_id: int) -> dict:
         if not book:
             return {"success": False, "error": f"Book {book_id} not found in database"}
 
+        if ctx:
+            await ctx.report_progress(0, 4, f"Loading extracted content for '{book.title}'...")
+
         metadata = {
             "id": book_id,
             "title": book.title,
@@ -230,6 +233,9 @@ def index_book(book_id: int) -> dict:
 
         blocks = load_extracted_blocks(book_dir)
 
+        if ctx:
+            await ctx.report_progress(1, 4, "Preparing vector stores and clearing old entries...")
+
         # Get vector stores
         store = get_vector_store(config)
         collections = get_collection_names(config)
@@ -241,6 +247,13 @@ def index_book(book_id: int) -> dict:
         for coll in [collections["full"], collections["equations"], collections["chapters"]]:
             store.delete_by_filter(coll, "book_id", book_id)
 
+        if ctx:
+            n_blocks = len(blocks) if blocks else 0
+            await ctx.report_progress(
+                2, 4,
+                f"Embedding and storing chunks (~{n_blocks} blocks, ~8 it/s — this takes several minutes)...",
+            )
+
         chunks, eq_count, ch_count = _index_book(
             book_id, content, raw_content, metadata,
             vector_store, equation_store, chapter_store, config,
@@ -250,6 +263,9 @@ def index_book(book_id: int) -> dict:
         # Update book status
         book.status = "indexed"
         session.commit()
+
+        if ctx:
+            await ctx.report_progress(4, 4, f"Indexed {chunks} chunks, {eq_count} equations, {ch_count} chapters")
 
         return {
             "success": True,
@@ -266,7 +282,7 @@ def index_book(book_id: int) -> dict:
 
 
 @mcp.tool()
-def extract_book(book_id: int, force: bool = False) -> dict:
+async def extract_book(book_id: int, force: bool = False, ctx: Context = None) -> dict:
     """Extract a book (PDF or EPUB) to markdown using Modal cloud GPUs.
 
     Reads the source file from the data volume, runs marker extraction on a
@@ -318,8 +334,13 @@ def extract_book(book_id: int, force: bool = False) -> dict:
 
         from librarian.cloud_extract import app, extract_pdf_remote
 
+        file_size_mb = source.stat().st_size / (1024 * 1024)
+        if ctx:
+            await ctx.report_progress(0, 3, f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
         file_bytes = source.read_bytes()
 
+        if ctx:
+            await ctx.report_progress(1, 3, "Extracting with marker on cloud GPU (this may take a few minutes)...")
         t0 = time.monotonic()
         with app.run():
             result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
@@ -331,6 +352,9 @@ def extract_book(book_id: int, force: bool = False) -> dict:
             session.commit()
             return {"success": False, "error": result["error"]}
 
+        if ctx:
+            await ctx.report_progress(2, 3, "Writing output files...")
+
         # Write output files
         (book_output / f"{book_id}.json").write_text(result["chunks_json"])
         if result["meta_json"]:
@@ -341,6 +365,9 @@ def extract_book(book_id: int, force: bool = False) -> dict:
         book.converted_path = str(book_output)
         book.extraction_duration_s = extraction_duration
         session.commit()
+
+        if ctx:
+            await ctx.report_progress(3, 3, f"Done in {extraction_duration:.0f}s")
 
         return {
             "success": True,
