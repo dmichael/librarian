@@ -38,7 +38,8 @@ class Book(Base):
     isbn = Column(String(20))
     format = Column(String(20))  # pdf, epub, kindle
     status = Column(String(20), nullable=False, default="pending")
-    # pending -> extracted -> indexed | failed
+    # pending -> extracting -> extracted -> indexing -> indexed | failed
+    status_message = Column(Text)  # human-readable progress message
     source_path = Column(Text)
     source_hash = Column(String(64))
     converted_path = Column(Text)

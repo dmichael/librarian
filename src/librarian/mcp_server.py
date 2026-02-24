@@ -15,9 +15,10 @@ Run:
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from librarian.config import load_config
 from librarian.db import Book, get_session
@@ -25,6 +26,31 @@ from librarian.db import Book, get_session
 log = logging.getLogger(__name__)
 
 mcp = FastMCP("librarian", host="0.0.0.0", port=8811)
+
+# ---------------------------------------------------------------------------
+# Background task helpers
+# ---------------------------------------------------------------------------
+
+
+def _update_book_status(book_id: int, status: str, message: str = None, **kwargs):
+    """Update book status from a background thread (uses its own session)."""
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if book:
+            book.status = status
+            book.status_message = message
+            for k, v in kwargs.items():
+                if hasattr(book, k):
+                    setattr(book, k, v)
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        log.error(f"Failed to update book {book_id} status: {e}")
+    finally:
+        session.close()
+
 
 # ---------------------------------------------------------------------------
 # Lazy singletons — heavy objects created once on first use
@@ -175,24 +201,15 @@ def text_search(
     return results
 
 
-@mcp.tool()
-async def index_book(book_id: int, ctx: Context = None) -> dict:
-    """Index an extracted book — embed chunks and store in pgvector.
-
-    The book must already be extracted (converted/ directory must exist with
-    JSON blocks and/or markdown). Updates book status to 'indexed'.
-
-    Args:
-        book_id: ID of the book to index
-    """
+def _index_book_worker(book_id: int):
+    """Background worker for book indexing."""
     from llama_index.core import Settings
 
     from librarian.config import expand_path
     from librarian.index import (
-        index_book as _index_book,
+        index_book as _index_book_impl,
         load_extracted_blocks,
         load_extracted_book,
-        setup_embedding_model,
     )
     from librarian.vectorstore import get_collection_names, get_vector_store
 
@@ -200,79 +217,119 @@ async def index_book(book_id: int, ctx: Context = None) -> dict:
     embed_model = _get_embed_model()
     Settings.embed_model = embed_model
 
-    output_path = expand_path(config["output_path"])
-    book_dir = output_path / str(book_id)
-
-    if not book_dir.exists():
-        return {"success": False, "error": f"No extracted content at {book_dir}"}
-
-    # Get book metadata from books table
-    session = get_session(config)
     try:
-        book = session.query(Book).filter(Book.id == book_id).first()
-        if not book:
-            return {"success": False, "error": f"Book {book_id} not found in database"}
+        output_path = expand_path(config["output_path"])
+        book_dir = output_path / str(book_id)
 
-        if ctx:
-            await ctx.report_progress(0, 4, f"Loading extracted content for '{book.title}'...")
+        _update_book_status(book_id, "indexing", "Loading extracted content...")
 
-        metadata = {
-            "id": book_id,
-            "title": book.title,
-            "authors": book.authors or [],
-            "subjects": book.subjects or [],
-            "tags": [],
-            "*library": book.library or "",
-            "source_path": book.source_path or "",
-        }
+        # Get book metadata
+        session = get_session(config)
+        try:
+            book = session.query(Book).filter(Book.id == book_id).first()
+            if not book:
+                _update_book_status(book_id, "failed", f"Book {book_id} not found")
+                return
 
-        # Load content
+            metadata = {
+                "id": book_id,
+                "title": book.title,
+                "authors": book.authors or [],
+                "subjects": book.subjects or [],
+                "tags": [],
+                "*library": book.library or "",
+                "source_path": book.source_path or "",
+            }
+        finally:
+            session.close()
+
         content, raw_content = load_extracted_book(book_dir)
         if not content:
-            return {"success": False, "error": "No extracted markdown found"}
+            _update_book_status(book_id, "failed", "No extracted markdown found")
+            return
 
         blocks = load_extracted_blocks(book_dir)
 
-        if ctx:
-            await ctx.report_progress(1, 4, "Preparing vector stores and clearing old entries...")
+        _update_book_status(book_id, "indexing", "Clearing old entries...")
 
-        # Get vector stores
         store = get_vector_store(config)
         collections = get_collection_names(config)
         vector_store = store.get_llama_store(collections["full"])
         equation_store = store.get_llama_store(collections["equations"])
         chapter_store = store.get_llama_store(collections["chapters"])
 
-        # Delete old entries first (idempotent re-index)
         for coll in [collections["full"], collections["equations"], collections["chapters"]]:
             store.delete_by_filter(coll, "book_id", book_id)
 
-        if ctx:
-            n_blocks = len(blocks) if blocks else 0
-            await ctx.report_progress(
-                2, 4,
-                f"Embedding and storing chunks (~{n_blocks} blocks, ~8 it/s — this takes several minutes)...",
-            )
+        n_blocks = len(blocks) if blocks else 0
+        _update_book_status(
+            book_id, "indexing",
+            f"Embedding ~{n_blocks} blocks (~8 it/s, several minutes)...",
+        )
 
-        chunks, eq_count, ch_count = _index_book(
+        chunks, eq_count, ch_count = _index_book_impl(
             book_id, content, raw_content, metadata,
             vector_store, equation_store, chapter_store, config,
             blocks=blocks,
         )
 
-        # Update book status
-        book.status = "indexed"
+        _update_book_status(
+            book_id, "indexed",
+            f"Indexed {chunks} chunks, {eq_count} equations, {ch_count} chapters",
+        )
+    except Exception as e:
+        log.error(f"Indexing failed for book {book_id}: {e}")
+        _update_book_status(book_id, "failed", str(e))
+
+
+@mcp.tool()
+def index_book(book_id: int) -> dict:
+    """Index an extracted book — embed chunks and store in pgvector.
+
+    Launches indexing in the background and returns immediately.
+    Use book_status(book_id) to track progress.
+
+    Args:
+        book_id: ID of the book to index
+    """
+    from librarian.config import expand_path
+
+    config = _get_config()
+    output_path = expand_path(config["output_path"])
+    book_dir = output_path / str(book_id)
+
+    if not book_dir.exists():
+        return {"success": False, "error": f"No extracted content at {book_dir}"}
+
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found in database"}
+
+        if book.status == "indexing":
+            return {
+                "success": False,
+                "error": f"Book {book_id} is already being indexed. Use book_status({book_id}) to check progress.",
+            }
+
+        # Mark as indexing and launch background worker
+        book.status = "indexing"
+        book.status_message = "Starting indexing..."
         session.commit()
 
-        if ctx:
-            await ctx.report_progress(4, 4, f"Indexed {chunks} chunks, {eq_count} equations, {ch_count} chapters")
+        thread = threading.Thread(
+            target=_index_book_worker,
+            args=(book_id,),
+            daemon=True,
+        )
+        thread.start()
 
         return {
             "success": True,
             "book_id": book_id,
-            "chunks": chunks,
-            "equations": eq_count,
-            "chapters": ch_count,
+            "status": "indexing",
+            "message": f"Indexing started for '{book.title}'. Use book_status({book_id}) to track progress.",
         }
     except Exception as e:
         session.rollback()
@@ -281,13 +338,59 @@ async def index_book(book_id: int, ctx: Context = None) -> dict:
         session.close()
 
 
+def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
+    """Background worker for book extraction."""
+    import time
+
+    from librarian.cloud_extract import app, extract_pdf_remote
+    from librarian.config import expand_path
+
+    source = Path(source_path)
+    book_output = Path(output_dir)
+
+    try:
+        file_size_mb = source.stat().st_size / (1024 * 1024)
+        _update_book_status(book_id, "extracting", f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
+
+        file_bytes = source.read_bytes()
+        _update_book_status(book_id, "extracting", "Running marker on cloud GPU...")
+
+        t0 = time.monotonic()
+        with app.run():
+            result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
+        extraction_duration = time.monotonic() - t0
+
+        if not result["success"]:
+            _update_book_status(
+                book_id, "failed", result["error"],
+                extraction_duration_s=extraction_duration,
+            )
+            return
+
+        _update_book_status(book_id, "extracting", "Writing output files...")
+
+        (book_output / f"{book_id}.json").write_text(result["chunks_json"])
+        if result["meta_json"]:
+            (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
+        (book_output / f"{book_id}.md").write_text(result["markdown"])
+
+        _update_book_status(
+            book_id, "extracted",
+            f"Extraction complete in {extraction_duration:.0f}s",
+            converted_path=str(book_output),
+            extraction_duration_s=extraction_duration,
+        )
+    except Exception as e:
+        log.error(f"Extraction failed for book {book_id}: {e}")
+        _update_book_status(book_id, "failed", str(e))
+
+
 @mcp.tool()
-async def extract_book(book_id: int, force: bool = False, ctx: Context = None) -> dict:
+def extract_book(book_id: int, force: bool = False) -> dict:
     """Extract a book (PDF or EPUB) to markdown using Modal cloud GPUs.
 
-    Reads the source file from the data volume, runs marker extraction on a
-    cloud A100, and writes results to converted/{book_id}/. Updates book
-    status to 'extracted'. Supports PDF and EPUB formats.
+    Launches extraction in the background and returns immediately.
+    Use book_status(book_id) to track progress.
 
     Args:
         book_id: ID of the book to extract
@@ -301,10 +404,10 @@ async def extract_book(book_id: int, force: bool = False, ctx: Context = None) -
         if not book:
             return {"success": False, "error": f"Book {book_id} not found"}
 
-        if not force and book.status in ("extracted", "indexed"):
+        if not force and book.status in ("extracting", "extracted", "indexing", "indexed"):
             return {
                 "success": False,
-                "error": f"Book {book_id} already {book.status}. Use force=True to re-extract.",
+                "error": f"Book {book_id} is {book.status}. Use force=True to re-extract.",
             }
 
         if not book.source_path:
@@ -318,63 +421,34 @@ async def extract_book(book_id: int, force: bool = False, ctx: Context = None) -
         if source.suffix.lower() not in supported:
             return {"success": False, "error": f"Unsupported format {source.suffix}, need PDF or EPUB"}
 
+        try:
+            import modal  # noqa: F401
+        except ImportError:
+            return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
+
         from librarian.config import expand_path
 
         output_path = expand_path(config["output_path"])
         book_output = output_path / str(book_id)
         book_output.mkdir(parents=True, exist_ok=True)
 
-        # All formats go through Modal/marker for consistent quality
-        try:
-            import modal  # noqa: F401
-        except ImportError:
-            return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
-
-        import time
-
-        from librarian.cloud_extract import app, extract_pdf_remote
-
-        file_size_mb = source.stat().st_size / (1024 * 1024)
-        if ctx:
-            await ctx.report_progress(0, 3, f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
-        file_bytes = source.read_bytes()
-
-        if ctx:
-            await ctx.report_progress(1, 3, "Extracting with marker on cloud GPU (this may take a few minutes)...")
-        t0 = time.monotonic()
-        with app.run():
-            result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
-        extraction_duration = time.monotonic() - t0
-
-        if not result["success"]:
-            book.status = "failed"
-            book.extraction_duration_s = extraction_duration
-            session.commit()
-            return {"success": False, "error": result["error"]}
-
-        if ctx:
-            await ctx.report_progress(2, 3, "Writing output files...")
-
-        # Write output files
-        (book_output / f"{book_id}.json").write_text(result["chunks_json"])
-        if result["meta_json"]:
-            (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
-        (book_output / f"{book_id}.md").write_text(result["markdown"])
-
-        book.status = "extracted"
-        book.converted_path = str(book_output)
-        book.extraction_duration_s = extraction_duration
+        # Mark as extracting and launch background worker
+        book.status = "extracting"
+        book.status_message = "Starting extraction..."
         session.commit()
 
-        if ctx:
-            await ctx.report_progress(3, 3, f"Done in {extraction_duration:.0f}s")
+        thread = threading.Thread(
+            target=_extract_book_worker,
+            args=(book_id, book.source_path, str(book_output)),
+            daemon=True,
+        )
+        thread.start()
 
         return {
             "success": True,
             "book_id": book_id,
-            "output_dir": str(book_output),
-            "method": "modal_cloud",
-            "extraction_duration_s": round(extraction_duration, 1),
+            "status": "extracting",
+            "message": f"Extraction started for '{book.title}'. Use book_status({book_id}) to track progress.",
         }
     except Exception as e:
         session.rollback()
@@ -648,6 +722,7 @@ def book_status(book_id: int) -> dict:
             "title": book.title,
             "authors": book.authors or [],
             "status": book.status,
+            "status_message": book.status_message,
             "format": book.format,
             "source_path": book.source_path,
             "converted_path": book.converted_path,
