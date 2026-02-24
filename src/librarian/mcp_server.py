@@ -602,35 +602,33 @@ def delete_book(book_id: int) -> dict:
 
 
 @mcp.tool()
-def book_status() -> dict:
-    """Pipeline statistics: book counts by status and total chunks indexed."""
-    from sqlalchemy import func, text
+def book_status(book_id: int) -> dict:
+    """Get the current status and metadata for a specific book.
 
+    Args:
+        book_id: ID of the book to check
+    """
     config = _get_config()
     session = get_session(config)
     try:
-        # Counts by status
-        rows = session.query(Book.status, func.count()).group_by(Book.status).all()
-        by_status = {status: count for status, count in rows}
-        total_books = sum(by_status.values())
-
-        # Chunk count from pgvector
-        try:
-            from librarian.vectorstore import get_collection_names, get_vector_store
-
-            store = get_vector_store(config)
-            collections = get_collection_names(config)
-            chunk_count = store.get_collection_count(collections["full"])
-            eq_count = store.get_collection_count(collections["equations"])
-        except Exception:
-            chunk_count = -1
-            eq_count = -1
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
 
         return {
-            "total_books": total_books,
-            "by_status": by_status,
-            "total_chunks": chunk_count,
-            "total_equations": eq_count,
+            "success": True,
+            "id": book.id,
+            "title": book.title,
+            "authors": book.authors or [],
+            "status": book.status,
+            "format": book.format,
+            "source_path": book.source_path,
+            "converted_path": book.converted_path,
+            "subjects": book.subjects or [],
+            "library": book.library,
+            "extraction_duration_s": book.extraction_duration_s,
+            "created_at": str(book.created_at) if book.created_at else None,
+            "updated_at": str(book.updated_at) if book.updated_at else None,
         }
     finally:
         session.close()
