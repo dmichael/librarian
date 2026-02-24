@@ -271,10 +271,14 @@ def _index_book_worker(book_id: int):
             f"Embedding ~{n_blocks} blocks (~8 it/s, several minutes)...",
         )
 
+        def _on_progress(done, total, message):
+            _update_book_status(book_id, "indexing", message)
+
         chunks, eq_count, ch_count = _index_book_impl(
             book_id, content, raw_content, metadata,
             vector_store, equation_store, chapter_store, config,
             blocks=blocks,
+            progress_fn=_on_progress,
         )
 
         _update_book_status(

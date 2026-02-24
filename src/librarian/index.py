@@ -557,6 +557,7 @@ def index_book(
     chapter_store: QdrantVectorStore | None,
     config: dict,
     blocks: list[dict] | None = None,
+    progress_fn: callable = None,
 ) -> tuple[int, int, int]:
     """Index a single book and return (text_chunks, equation_count, chapter_count).
 
@@ -570,6 +571,7 @@ def index_book(
         chapter_store: Chapter summary store (or None to skip)
         config: Application config
         blocks: Optional JSON blocks from marker (preferred for page metadata)
+        progress_fn: Optional callback(done, total, message) for progress reporting
 
     Returns:
         Tuple of (text_chunk_count, equation_count, chapter_count)
@@ -698,14 +700,21 @@ def index_book(
     # Create storage context with vector store
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # Build index from nodes (this embeds and stores)
-    VectorStoreIndex(
-        nodes=nodes,
-        storage_context=storage_context,
-        show_progress=True,
-    )
+    # Embed and store in batches so we can report progress
+    batch_size = 200
+    total = len(nodes)
+    for i in range(0, total, batch_size):
+        batch = nodes[i : i + batch_size]
+        VectorStoreIndex(
+            nodes=batch,
+            storage_context=storage_context,
+            show_progress=True,
+        )
+        done = min(i + batch_size, total)
+        if progress_fn:
+            progress_fn(done, total, f"Embedded {done}/{total} chunks")
 
-    return len(nodes), eq_count, ch_count
+    return total, eq_count, ch_count
 
 
 
