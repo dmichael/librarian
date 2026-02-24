@@ -31,6 +31,10 @@ mcp = FastMCP("librarian", host="0.0.0.0", port=8811)
 # Background task helpers
 # ---------------------------------------------------------------------------
 
+# Modal app.run() only allows one active context at a time.
+# Serialize all Modal calls so concurrent extract_book requests queue up.
+_modal_lock = threading.Lock()
+
 
 def _update_book_status(book_id: int, status: str, message: str = None, **kwargs):
     """Update book status from a background thread (uses its own session)."""
@@ -350,15 +354,23 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
 
     try:
         file_size_mb = source.stat().st_size / (1024 * 1024)
-        _update_book_status(book_id, "extracting", f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
 
-        file_bytes = source.read_bytes()
-        _update_book_status(book_id, "extracting", "Running marker on cloud GPU...")
+        # Serialize Modal calls — only one app.run() context allowed at a time
+        if _modal_lock.locked():
+            _update_book_status(book_id, "extracting", "Queued — waiting for another extraction to finish...")
+        _modal_lock.acquire()
+        try:
+            _update_book_status(book_id, "extracting", f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
 
-        t0 = time.monotonic()
-        with app.run():
-            result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
-        extraction_duration = time.monotonic() - t0
+            file_bytes = source.read_bytes()
+            _update_book_status(book_id, "extracting", "Running marker on cloud GPU...")
+
+            t0 = time.monotonic()
+            with app.run():
+                result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
+            extraction_duration = time.monotonic() - t0
+        finally:
+            _modal_lock.release()
 
         if not result["success"]:
             _update_book_status(
