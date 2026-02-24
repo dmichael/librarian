@@ -266,7 +266,7 @@ def index_book(book_id: int) -> dict:
 
 
 @mcp.tool()
-def extract_book(book_id: int) -> dict:
+def extract_book(book_id: int, force: bool = False) -> dict:
     """Extract a book (PDF or EPUB) to markdown using Modal cloud GPUs.
 
     Reads the source file from the data volume, runs marker extraction on a
@@ -275,6 +275,7 @@ def extract_book(book_id: int) -> dict:
 
     Args:
         book_id: ID of the book to extract
+        force: Re-extract even if already extracted/indexed
     """
     config = _get_config()
 
@@ -283,6 +284,12 @@ def extract_book(book_id: int) -> dict:
         book = session.query(Book).filter(Book.id == book_id).first()
         if not book:
             return {"success": False, "error": f"Book {book_id} not found"}
+
+        if not force and book.status in ("extracted", "indexed"):
+            return {
+                "success": False,
+                "error": f"Book {book_id} already {book.status}. Use force=True to re-extract.",
+            }
 
         if not book.source_path:
             return {"success": False, "error": f"Book {book_id} has no source_path"}
@@ -307,15 +314,20 @@ def extract_book(book_id: int) -> dict:
         except ImportError:
             return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
 
+        import time
+
         from librarian.cloud_extract import app, extract_pdf_remote
 
         file_bytes = source.read_bytes()
 
+        t0 = time.monotonic()
         with app.run():
             result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
+        extraction_duration = time.monotonic() - t0
 
         if not result["success"]:
             book.status = "failed"
+            book.extraction_duration_s = extraction_duration
             session.commit()
             return {"success": False, "error": result["error"]}
 
@@ -327,6 +339,7 @@ def extract_book(book_id: int) -> dict:
 
         book.status = "extracted"
         book.converted_path = str(book_output)
+        book.extraction_duration_s = extraction_duration
         session.commit()
 
         return {
@@ -334,6 +347,7 @@ def extract_book(book_id: int) -> dict:
             "book_id": book_id,
             "output_dir": str(book_output),
             "method": "modal_cloud",
+            "extraction_duration_s": round(extraction_duration, 1),
         }
     except Exception as e:
         session.rollback()

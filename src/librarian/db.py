@@ -12,6 +12,7 @@ from sqlalchemy import (
     ARRAY,
     TIMESTAMP,
     Column,
+    Float,
     Integer,
     String,
     Text,
@@ -43,9 +44,14 @@ class Book(Base):
     converted_path = Column(Text)
     subjects = Column(ARRAY(Text), default=list)
     library = Column(String(100))
+    extraction_duration_s = Column(Float)
     metadata_ = Column("metadata", JSONB, default=dict)
     created_at = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
     def __repr__(self):
         return f"<Book(id={self.id}, title='{self.title[:40]}', status='{self.status}')>"
