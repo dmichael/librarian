@@ -9,6 +9,8 @@ RUN apt-get update && \
 COPY pyproject.toml .
 COPY src/ src/
 COPY config/settings.yaml config/settings.yaml
+COPY alembic.ini alembic.ini
+COPY alembic/ alembic/
 
 RUN pip install --no-cache-dir -e ".[serve]"
 
@@ -43,4 +45,4 @@ EXPOSE 8811
 
 ENV LIBRARIAN_EMBEDDING_DEVICE=cpu
 
-CMD ["python", "-m", "librarian.mcp_server"]
+CMD ["sh", "-c", "alembic upgrade head && python -m librarian.mcp_server"]
