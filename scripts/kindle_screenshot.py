@@ -186,6 +186,66 @@ def file_hash(path: Path) -> str:
     return md5.hexdigest()
 
 
+def downscale_images(image_dir: Path, max_width: int = 1400) -> Path:
+    """Downscale PNG images into a 'resized' subdirectory. Originals are never
+    modified. Parallelized across CPU cores. Returns the directory containing
+    the images to use (resized dir, or original if no scaling needed)."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from PIL import Image
+
+    images = sorted(image_dir.glob("*.png"))
+    if not images:
+        return image_dir
+
+    sample = Image.open(images[0])
+    if sample.size[0] <= max_width:
+        print(f"Images already {sample.size[0]}x{sample.size[1]}, no downscaling needed")
+        return image_dir
+
+    resized_dir = image_dir / "resized"
+    resized_dir.mkdir(exist_ok=True)
+
+    scale = max_width / sample.size[0]
+    new_w = max_width
+    new_h = int(sample.size[1] * scale)
+    total = len(images)
+    workers = min(multiprocessing.cpu_count(), total)
+    print(f"Downscaling {total} images: {sample.size[0]}x{sample.size[1]} -> {new_w}x{new_h} ({workers} workers)")
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_downscale_one, img_path, resized_dir / img_path.name, new_w, new_h): img_path
+            for img_path in images
+        }
+        done = 0
+        for f in as_completed(futures):
+            img_path = futures[f]
+            try:
+                f.result()
+            except Exception as e:
+                print(f"  Warning: skipping {img_path.name}: {e}", flush=True)
+            done += 1
+            if done % 50 == 0 or done == total:
+                print(f"  Downscaled {done}/{total}", flush=True)
+
+    return resized_dir
+
+
+def _downscale_one(src_path: Path, dst_path: Path, width: int, height: int):
+    """Downscale a single image to dst_path (runs in worker process).
+    Strips alpha channel — screenshots are opaque and alpha causes
+    slow soft-mask computation in img2pdf."""
+    from PIL import Image
+
+    img = Image.open(src_path)
+    img = img.resize((width, height), Image.LANCZOS)
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
+    img.save(dst_path, optimize=True)
+
+
 def combine_images_to_pdf(image_dir: Path, output_pdf: Path) -> bool:
     """Combine PNG images into a single PDF."""
     images = sorted(image_dir.glob("*.png"))
@@ -391,8 +451,9 @@ Examples:
 
     # Combine-only mode
     if args.combine_only:
+        pdf_source = downscale_images(output_dir)
         pdf_path = output_dir / f"{book_slug}.pdf"
-        if combine_images_to_pdf(output_dir, pdf_path):
+        if combine_images_to_pdf(pdf_source, pdf_path):
             print(f"\nReady for pipeline:")
             print(f"  cp {pdf_path} ~/data/librarian/source/")
             print(f"  calibredb add ~/data/librarian/source/{book_slug}.pdf --library-path ~/data/librarian/calibre")
@@ -417,10 +478,11 @@ Examples:
         metadata_path = save_metadata(output_dir, args.book, captured, args.start_page)
         print(f"Metadata saved to: {metadata_path}")
 
-    # Combine if requested
+    # Downscale and combine if requested
     if args.combine and captured > 0:
+        pdf_source = downscale_images(output_dir)
         pdf_path = output_dir / f"{book_slug}.pdf"
-        combine_images_to_pdf(output_dir, pdf_path)
+        combine_images_to_pdf(pdf_source, pdf_path)
         print(f"\nReady for pipeline:")
         print(f"  cp {pdf_path} ~/data/librarian/source/")
         print(f"  calibredb add ~/data/librarian/source/{book_slug}.pdf --library-path ~/data/librarian/calibre")
