@@ -988,6 +988,479 @@ async def handle_upload(request):
 
 
 # ---------------------------------------------------------------------------
+# Book verification / QA
+# ---------------------------------------------------------------------------
+
+
+def _assess(status: str, details: dict, issues: list[str]) -> dict:
+    """Build a verification dimension result."""
+    return {"status": status, "details": details, "issues": issues}
+
+
+def _check_garbled(text: str) -> list[str]:
+    """Check a text sample for OCR quality issues."""
+    import re
+
+    issues = []
+    words = text.split()
+    if not words:
+        return ["Empty text"]
+
+    # Average word length — very short suggests garbled extraction
+    avg_len = sum(len(w) for w in words) / len(words)
+    if avg_len < 2.5:
+        issues.append(f"Very short average word length ({avg_len:.1f})")
+
+    # Excessive special characters (non-alphanumeric, non-punctuation)
+    alpha_count = sum(1 for c in text if c.isalnum() or c.isspace())
+    alpha_ratio = alpha_count / len(text) if text else 0
+    if alpha_ratio < 0.6:
+        issues.append(f"Low alphanumeric ratio ({alpha_ratio:.0%})")
+
+    # Repeated characters (e.g., "aaaa" or "????")
+    repeated = re.findall(r'(.)\1{4,}', text)
+    if repeated:
+        issues.append(f"Repeated character runs: {''.join(set(repeated))}")
+
+    # Encoding artifacts
+    encoding_markers = ['â€™', 'â€"', 'â€œ', 'Ã©', 'Ã¡', 'ï¬', '\ufffd']
+    found = [m for m in encoding_markers if m in text]
+    if found:
+        issues.append(f"Encoding artifacts: {', '.join(found[:3])}")
+
+    return issues
+
+
+@mcp.tool()
+def verify_book(book_id: int) -> dict:
+    """Thorough post-indexing QA for a book. Checks structure, completeness,
+    OCR quality, landmarks, metadata, equations, and chapter detection.
+
+    Each dimension returns green/yellow/red status with details and issues.
+    Run this after indexing to verify quality before declaring a book done.
+
+    Args:
+        book_id: ID of the book to verify
+    """
+    import json
+    import random
+    import re
+
+    from librarian.config import expand_path
+    from librarian.index import load_extracted_blocks, load_extracted_book
+    from librarian.structure import (
+        extract_structure_from_blocks,
+        parse_structure,
+        validate_structure,
+    )
+    from librarian.vectorstore import get_collection_names, get_vector_store
+
+    config = _get_config()
+    session = get_session(config)
+    results = {}
+
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+
+        # ── 1. Metadata ─────────────────────────────────────────────
+        meta_issues = []
+        if not book.title:
+            meta_issues.append("Missing title")
+        if not book.authors:
+            meta_issues.append("Missing authors")
+        if not book.subjects:
+            meta_issues.append("Missing subjects (use update_book to tag)")
+        if not book.library:
+            meta_issues.append("Missing library (use update_book to assign)")
+
+        meta_status = "green"
+        if not book.title or not book.authors:
+            meta_status = "red"
+        elif not book.subjects or not book.library:
+            meta_status = "yellow"
+
+        results["metadata"] = _assess(meta_status, {
+            "title": book.title,
+            "authors": book.authors or [],
+            "subjects": book.subjects or [],
+            "library": book.library,
+            "format": book.format,
+            "status": book.status,
+            "extraction_duration_s": book.extraction_duration_s,
+        }, meta_issues)
+
+        # ── 2. Load extracted content ───────────────────────────────
+        output_path = expand_path(config["output_path"])
+        book_dir = output_path / str(book_id)
+
+        if not book_dir.exists():
+            results["extraction"] = _assess("red", {}, ["No extracted content directory found"])
+            return {"success": True, "book_id": book_id, "verification": results}
+
+        blocks = load_extracted_blocks(book_dir)
+        content, raw_content = load_extracted_book(book_dir)
+
+        if not content:
+            results["extraction"] = _assess("red", {}, ["No extracted markdown found"])
+            return {"success": True, "book_id": book_id, "verification": results}
+
+        # ── 3. Structure / Chapters ─────────────────────────────────
+        if blocks:
+            structure = extract_structure_from_blocks(blocks, title=book.title or "")
+            total_pages = max((b.get("page") or 0) for b in blocks)
+            structure_source = "blocks"
+        else:
+            structure = parse_structure(raw_content, title=book.title or "")
+            total_pages = None
+            structure_source = "markdown"
+
+        validation = validate_structure(structure, total_pages)
+        ch_count = validation["chapter_count"]
+
+        struct_issues = list(validation.get("warnings", []))
+        if structure_source == "markdown":
+            struct_issues.append("Using markdown fallback (no JSON blocks) — page numbers may be unreliable")
+        if ch_count == 0 and "No chapters detected" not in struct_issues:
+            struct_issues.append("No chapters detected — headers may not match known patterns (Chapter N, Rule No. N, Part N, Cycle N, N. Title)")
+
+        # Check chapter title quality
+        chapters_without_title = [ch for ch in structure.chapters if not ch.title]
+        if chapters_without_title:
+            struct_issues.append(
+                f"{len(chapters_without_title)} chapters missing titles: "
+                + ", ".join(f"Ch {ch.number}" for ch in chapters_without_title[:5])
+            )
+
+        struct_status = "green"
+        if ch_count == 0:
+            struct_status = "red"
+        elif struct_issues:
+            struct_status = "yellow"
+
+        chapter_details = []
+        for ch in structure.chapters:
+            chapter_details.append({
+                "number": ch.number,
+                "title": ch.title or "(untitled)",
+                "page_start": ch.page_start,
+                "page_end": ch.page_end,
+                "sections": len(ch.sections),
+            })
+
+        results["structure"] = _assess(struct_status, {
+            "source": structure_source,
+            "chapter_count": ch_count,
+            "chapters_with_pages": validation["chapters_with_pages"],
+            "page_coverage": round(validation["page_coverage"], 2),
+            "total_pages": total_pages,
+            "chapters": chapter_details,
+        }, struct_issues)
+
+        # ── 4. Chunk Analysis from pgvector ─────────────────────────
+        store = get_vector_store(config)
+        collections = get_collection_names(config)
+
+        # Query chunk stats via raw SQL
+        conn = store._get_psycopg_conn()
+        table = f"data_{collections['full']}"
+
+        # Total chunks
+        cur = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE metadata_->>'book_id' = %s",
+            (str(book_id),),
+        )
+        chunk_count = cur.fetchone()[0]
+
+        if chunk_count == 0:
+            results["completeness"] = _assess("red", {"chunks": 0}, ["No chunks in vector store"])
+            return {"success": True, "book_id": book_id, "verification": results}
+
+        # Chapter coverage in chunks
+        cur = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE metadata_->>'book_id' = %s "
+            f"  AND metadata_->>'chapter_num' IS NOT NULL "
+            f"  AND metadata_->>'chapter_num' != 'null' "
+            f"  AND metadata_->>'chapter_num' != ''",
+            (str(book_id),),
+        )
+        chunks_with_chapter = cur.fetchone()[0]
+
+        # Page distribution
+        cur = conn.execute(
+            f"SELECT "
+            f"  MIN((metadata_->>'page')::int) FILTER (WHERE metadata_->>'page' IS NOT NULL AND metadata_->>'page' != 'null'), "
+            f"  MAX((metadata_->>'page')::int) FILTER (WHERE metadata_->>'page' IS NOT NULL AND metadata_->>'page' != 'null'), "
+            f"  COUNT(DISTINCT (metadata_->>'page')::int) FILTER (WHERE metadata_->>'page' IS NOT NULL AND metadata_->>'page' != 'null'), "
+            f"  COUNT(*) FILTER (WHERE metadata_->>'page' IS NULL OR metadata_->>'page' = 'null') "
+            f"FROM {table} WHERE metadata_->>'book_id' = %s",
+            (str(book_id),),
+        )
+        page_row = cur.fetchone()
+        min_page, max_page, distinct_pages, chunks_no_page = page_row
+
+        # Block type distribution
+        cur = conn.execute(
+            f"SELECT COALESCE(metadata_->>'block_type', 'Unknown'), COUNT(*) "
+            f"FROM {table} WHERE metadata_->>'book_id' = %s "
+            f"GROUP BY 1 ORDER BY 2 DESC",
+            (str(book_id),),
+        )
+        block_type_dist = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Distinct chapter numbers in chunks
+        cur = conn.execute(
+            f"SELECT DISTINCT (metadata_->>'chapter_num')::int "
+            f"FROM {table} "
+            f"WHERE metadata_->>'book_id' = %s "
+            f"  AND metadata_->>'chapter_num' IS NOT NULL "
+            f"  AND metadata_->>'chapter_num' != 'null' "
+            f"  AND metadata_->>'chapter_num' != '' "
+            f"ORDER BY 1",
+            (str(book_id),),
+        )
+        indexed_chapter_nums = [row[0] for row in cur.fetchall()]
+
+        chapter_coverage = chunks_with_chapter / chunk_count if chunk_count else 0
+
+        completeness_issues = []
+        if chunks_no_page and chunks_no_page > chunk_count * 0.3:
+            completeness_issues.append(f"{chunks_no_page}/{chunk_count} chunks missing page numbers")
+        if chapter_coverage < 0.5:
+            completeness_issues.append(
+                f"Only {chapter_coverage:.0%} of chunks have chapter metadata "
+                f"({chunks_with_chapter}/{chunk_count})"
+            )
+        if total_pages and distinct_pages and distinct_pages < total_pages * 0.5:
+            completeness_issues.append(
+                f"Only {distinct_pages}/{total_pages} distinct pages represented in chunks"
+            )
+
+        # Check for expected page range coverage
+        if min_page is not None and max_page is not None and total_pages:
+            expected_pages = set(range(min_page, max_page + 1))
+            # Sample check for large gaps (query a sample of page numbers)
+            cur = conn.execute(
+                f"SELECT DISTINCT (metadata_->>'page')::int "
+                f"FROM {table} WHERE metadata_->>'book_id' = %s "
+                f"  AND metadata_->>'page' IS NOT NULL AND metadata_->>'page' != 'null' "
+                f"ORDER BY 1",
+                (str(book_id),),
+            )
+            actual_pages = {row[0] for row in cur.fetchall()}
+            missing = expected_pages - actual_pages
+            if len(missing) > 5:
+                # Find contiguous gaps
+                missing_sorted = sorted(missing)
+                gaps = []
+                gap_start = missing_sorted[0]
+                gap_end = missing_sorted[0]
+                for p in missing_sorted[1:]:
+                    if p == gap_end + 1:
+                        gap_end = p
+                    else:
+                        gaps.append((gap_start, gap_end))
+                        gap_start = p
+                        gap_end = p
+                gaps.append((gap_start, gap_end))
+                gap_strs = [f"{s}-{e}" if s != e else str(s) for s, e in gaps[:5]]
+                completeness_issues.append(
+                    f"{len(missing)} pages missing from chunks. Gaps: {', '.join(gap_strs)}"
+                    + (" ..." if len(gaps) > 5 else "")
+                )
+
+        comp_status = "green"
+        if chunk_count < 10 or chapter_coverage < 0.3:
+            comp_status = "red"
+        elif completeness_issues:
+            comp_status = "yellow"
+
+        results["completeness"] = _assess(comp_status, {
+            "total_chunks": chunk_count,
+            "chunks_with_chapter": chunks_with_chapter,
+            "chapter_coverage": f"{chapter_coverage:.0%}",
+            "indexed_chapters": indexed_chapter_nums,
+            "page_range": f"{min_page}-{max_page}" if min_page is not None else "unknown",
+            "distinct_pages": distinct_pages,
+            "total_pages": total_pages,
+            "chunks_missing_page": chunks_no_page,
+            "block_types": block_type_dist,
+        }, completeness_issues)
+
+        # ── 5. OCR Quality (sample chunks) ──────────────────────────
+        cur = conn.execute(
+            f"SELECT text FROM {table} WHERE metadata_->>'book_id' = %s "
+            f"ORDER BY RANDOM() LIMIT 20",
+            (str(book_id),),
+        )
+        sample_texts = [row[0] for row in cur.fetchall() if row[0]]
+
+        ocr_issues = []
+        garbled_count = 0
+        checked_count = 0
+        for text in sample_texts:
+            # Skip very short chunks (verse numbers, page markers, etc.)
+            if len(text.strip()) < 30:
+                continue
+            checked_count += 1
+            chunk_issues = _check_garbled(text)
+            if chunk_issues:
+                garbled_count += 1
+                if len(ocr_issues) < 3:  # Only report first 3
+                    preview = text[:80].replace('\n', ' ')
+                    ocr_issues.append(f"Sample: '{preview}...' — {'; '.join(chunk_issues)}")
+
+        garbled_ratio = garbled_count / checked_count if checked_count else 0
+        ocr_status = "green"
+        if garbled_ratio > 0.3:
+            ocr_status = "red"
+        elif garbled_ratio > 0.1:
+            ocr_status = "yellow"
+
+        results["ocr_quality"] = _assess(ocr_status, {
+            "samples_checked": checked_count,
+            "samples_with_issues": garbled_count,
+            "issue_ratio": f"{garbled_ratio:.0%}",
+        }, ocr_issues)
+
+        # ── 6. Landmarks ────────────────────────────────────────────
+        landmark_keywords = {
+            "table_of_contents": ["table of contents", "contents"],
+            "bibliography": ["bibliography", "references cited", "works cited"],
+            "index": ["\\bindex\\b"],  # word boundary to avoid matching "indexing" etc.
+            "appendix": ["appendix"],
+            "glossary": ["glossary"],
+            "preface": ["preface", "foreword"],
+            "introduction": ["introduction"],
+        }
+
+        landmarks_found = {}
+        for landmark, keywords in landmark_keywords.items():
+            # Check in section headers first
+            cur = conn.execute(
+                f"SELECT COUNT(*) FROM {table} "
+                f"WHERE metadata_->>'book_id' = %s "
+                f"  AND metadata_->>'block_type' = 'SectionHeader' "
+                f"  AND text ~* %s",
+                (str(book_id), "|".join(keywords)),
+            )
+            header_count = cur.fetchone()[0]
+            if header_count > 0:
+                landmarks_found[landmark] = "found_in_headers"
+            else:
+                # Check in any chunk
+                cur = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} "
+                    f"WHERE metadata_->>'book_id' = %s AND text ~* %s LIMIT 1",
+                    (str(book_id), "|".join(keywords)),
+                )
+                if cur.fetchone()[0] > 0:
+                    landmarks_found[landmark] = "found_in_text"
+
+        landmark_issues = []
+        # Most books should have at least an introduction
+        if "introduction" not in landmarks_found and "preface" not in landmarks_found:
+            landmark_issues.append("No introduction or preface found")
+        # Having a TOC is good
+        if "table_of_contents" not in landmarks_found:
+            landmark_issues.append("No table of contents found (may be normal for some books)")
+
+        landmark_status = "green"
+        if not landmarks_found:
+            landmark_status = "yellow"
+
+        results["landmarks"] = _assess(landmark_status, {
+            "found": landmarks_found,
+        }, landmark_issues)
+
+        # ── 7. Equations ────────────────────────────────────────────
+        eq_table = f"data_{collections['equations']}"
+        try:
+            cur = conn.execute(
+                f"SELECT COUNT(*) FROM {eq_table} WHERE metadata_->>'book_id' = %s",
+                (str(book_id),),
+            )
+            eq_count = cur.fetchone()[0]
+        except Exception:
+            eq_count = 0
+
+        # Check if content has LaTeX
+        latex_in_content = bool(re.search(r'\$\$.+?\$\$', raw_content, re.DOTALL)) if raw_content else False
+
+        eq_issues = []
+        if latex_in_content and eq_count == 0:
+            eq_issues.append("LaTeX equations found in content but none indexed")
+        eq_status = "green"
+        if eq_issues:
+            eq_status = "yellow"
+
+        results["equations"] = _assess(eq_status, {
+            "indexed_equations": eq_count,
+            "latex_in_content": latex_in_content,
+        }, eq_issues)
+
+        # ── 8. Chapter Summaries ────────────────────────────────────
+        ch_table = f"data_{collections['chapters']}"
+        try:
+            cur = conn.execute(
+                f"SELECT COUNT(*) FROM {ch_table} WHERE metadata_->>'book_id' = %s",
+                (str(book_id),),
+            )
+            ch_indexed = cur.fetchone()[0]
+        except Exception:
+            ch_indexed = 0
+
+        ch_issues = []
+        if ch_count > 0 and ch_indexed == 0:
+            ch_issues.append(f"Structure has {ch_count} chapters but none are indexed with summaries")
+        elif ch_count > 0 and ch_indexed < ch_count:
+            ch_issues.append(f"Only {ch_indexed}/{ch_count} chapters have summaries")
+
+        ch_status = "green"
+        if ch_count > 0 and ch_indexed == 0:
+            ch_status = "red"
+        elif ch_issues:
+            ch_status = "yellow"
+
+        results["chapter_summaries"] = _assess(ch_status, {
+            "detected_chapters": ch_count,
+            "indexed_summaries": ch_indexed,
+        }, ch_issues)
+
+        # ── Overall ─────────────────────────────────────────────────
+        statuses = [r["status"] for r in results.values()]
+        if "red" in statuses:
+            overall = "red"
+        elif "yellow" in statuses:
+            overall = "yellow"
+        else:
+            overall = "green"
+
+        # Collect all issues across dimensions
+        all_issues = []
+        for dim, result in results.items():
+            for issue in result["issues"]:
+                all_issues.append(f"[{dim}] {issue}")
+
+        return {
+            "success": True,
+            "book_id": book_id,
+            "title": book.title,
+            "overall_status": overall,
+            "verification": results,
+            "all_issues": all_issues,
+        }
+
+    except Exception as e:
+        log.error(f"Verification failed for book {book_id}: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Tag suggestion keywords → subjects
 # ---------------------------------------------------------------------------
 
