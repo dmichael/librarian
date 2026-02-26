@@ -62,6 +62,7 @@ def _update_book_status(book_id: int, status: str, message: str = None, **kwargs
 
 _config = None
 _embed_model = None
+_embed_lock = threading.Lock()
 
 
 def _get_config():
@@ -72,9 +73,19 @@ def _get_config():
 
 
 def _get_embed_model():
-    """Load embedding model once (takes a few seconds on first call)."""
+    """Load embedding model once (takes a few seconds on first call).
+
+    Thread-safe — concurrent callers block on the lock while the model loads.
+    """
     global _embed_model
-    if _embed_model is None:
+    if _embed_model is not None:
+        return _embed_model
+
+    with _embed_lock:
+        # Double-check after acquiring lock
+        if _embed_model is not None:
+            return _embed_model
+
         from llama_index.core import Settings
         from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
@@ -988,6 +999,100 @@ async def handle_upload(request):
 
 
 # ---------------------------------------------------------------------------
+# HTTP download endpoint
+# ---------------------------------------------------------------------------
+
+
+@mcp.custom_route("/download/{book_id}", methods=["GET"])
+async def handle_download(request):
+    """Download the original source file for a book.
+
+    GET http://localhost:8811/download/42
+    """
+    from starlette.responses import FileResponse, JSONResponse
+
+    book_id_str = request.path_params.get("book_id")
+    try:
+        book_id = int(book_id_str)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"success": False, "error": "Invalid book_id"},
+            status_code=400,
+        )
+
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return JSONResponse(
+                {"success": False, "error": f"Book {book_id} not found"},
+                status_code=404,
+            )
+        if not book.source_path:
+            return JSONResponse(
+                {"success": False, "error": f"Book {book_id} has no source file"},
+                status_code=404,
+            )
+        source = Path(book.source_path)
+        if not source.exists():
+            return JSONResponse(
+                {"success": False, "error": f"Source file not found on disk: {source.name}"},
+                status_code=404,
+            )
+        title_slug = book.title[:60].replace(" ", "_").replace("/", "-")
+        filename = f"{title_slug}{source.suffix}"
+    finally:
+        session.close()
+
+    return FileResponse(
+        path=str(source),
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
+@mcp.tool()
+def download_book(book_id: int) -> dict:
+    """Get a download link for the original source file of a book.
+
+    Returns an HTTP URL that can be used to download the file directly.
+
+    Args:
+        book_id: ID of the book to download
+    """
+    config = _get_config()
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+        if not book.source_path:
+            return {"success": False, "error": f"Book {book_id} has no source file"}
+        source = Path(book.source_path)
+        if not source.exists():
+            return {"success": False, "error": f"Source file not found on disk: {source.name}"}
+
+        base = config.get("public_url")
+        if not base:
+            host = config.get("host", "localhost")
+            port = config.get("port", 8811)
+            base = f"http://{host}:{port}"
+        url = f"{base.rstrip('/')}/download/{book_id}"
+
+        return {
+            "success": True,
+            "book_id": book_id,
+            "title": book.title,
+            "format": book.format,
+            "download_url": url,
+            "size_bytes": source.stat().st_size,
+        }
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Book verification / QA
 # ---------------------------------------------------------------------------
 
@@ -1091,7 +1196,43 @@ def verify_book(book_id: int) -> dict:
             "extraction_duration_s": book.extraction_duration_s,
         }, meta_issues)
 
-        # ── 2. Load extracted content ───────────────────────────────
+        # ── 2. Source Files ───────────────────────────────────────
+        from pathlib import Path
+
+        src_issues = []
+        src_details = {}
+
+        if book.source_path:
+            src = Path(book.source_path)
+            src_details["source_path"] = book.source_path
+            if src.exists():
+                src_details["source_exists"] = True
+                src_details["source_size_bytes"] = src.stat().st_size
+            else:
+                src_details["source_exists"] = False
+                src_issues.append(f"Source file missing: {book.source_path}")
+        else:
+            src_details["source_exists"] = False
+            src_issues.append("No source_path set")
+
+        if book.converted_path:
+            conv = Path(book.converted_path)
+            src_details["converted_path"] = book.converted_path
+            if conv.exists():
+                src_details["converted_exists"] = True
+            else:
+                src_details["converted_exists"] = False
+                src_issues.append(f"Converted file missing: {book.converted_path}")
+
+        src_status = "green"
+        if not book.source_path or (book.source_path and not Path(book.source_path).exists()):
+            src_status = "red"
+        elif src_issues:
+            src_status = "yellow"
+
+        results["source_files"] = _assess(src_status, src_details, src_issues)
+
+        # ── 3. Load extracted content ───────────────────────────────
         output_path = expand_path(config["output_path"])
         book_dir = output_path / str(book_id)
 
@@ -1106,10 +1247,11 @@ def verify_book(book_id: int) -> dict:
             results["extraction"] = _assess("red", {}, ["No extracted markdown found"])
             return {"success": True, "book_id": book_id, "verification": results}
 
-        # ── 3. Structure / Chapters ─────────────────────────────────
+        # ── 4. Structure / Chapters ─────────────────────────────────
         if blocks:
             structure = extract_structure_from_blocks(blocks, title=book.title or "")
-            total_pages = max((b.get("page") or 0) for b in blocks)
+            pages = [b.get("page") for b in blocks if b.get("page")]
+            total_pages = (max(pages) - min(pages) + 1) if pages else None
             structure_source = "blocks"
         else:
             structure = parse_structure(raw_content, title=book.title or "")
@@ -1158,7 +1300,7 @@ def verify_book(book_id: int) -> dict:
             "chapters": chapter_details,
         }, struct_issues)
 
-        # ── 4. Chunk Analysis from pgvector ─────────────────────────
+        # ── 5. Chunk Analysis from pgvector ─────────────────────────
         store = get_vector_store(config)
         collections = get_collection_names(config)
 
@@ -1233,13 +1375,14 @@ def verify_book(book_id: int) -> dict:
                 f"Only {chapter_coverage:.0%} of chunks have chapter metadata "
                 f"({chunks_with_chapter}/{chunk_count})"
             )
-        if total_pages and distinct_pages and distinct_pages < total_pages * 0.5:
+        page_span = (max_page - min_page + 1) if (min_page is not None and max_page is not None) else None
+        if page_span and distinct_pages and distinct_pages < page_span * 0.5:
             completeness_issues.append(
-                f"Only {distinct_pages}/{total_pages} distinct pages represented in chunks"
+                f"Only {distinct_pages}/{page_span} distinct pages represented in chunks"
             )
 
-        # Check for expected page range coverage
-        if min_page is not None and max_page is not None and total_pages:
+        # Check for page gaps within the actual page range
+        if min_page is not None and max_page is not None:
             expected_pages = set(range(min_page, max_page + 1))
             # Sample check for large gaps (query a sample of page numbers)
             cur = conn.execute(
@@ -1289,7 +1432,7 @@ def verify_book(book_id: int) -> dict:
             "block_types": block_type_dist,
         }, completeness_issues)
 
-        # ── 5. OCR Quality (sample chunks) ──────────────────────────
+        # ── 6. OCR Quality (sample chunks) ──────────────────────────
         cur = conn.execute(
             f"SELECT text FROM {table} WHERE metadata_->>'book_id' = %s "
             f"ORDER BY RANDOM() LIMIT 20",
@@ -1325,7 +1468,7 @@ def verify_book(book_id: int) -> dict:
             "issue_ratio": f"{garbled_ratio:.0%}",
         }, ocr_issues)
 
-        # ── 6. Landmarks ────────────────────────────────────────────
+        # ── 7. Landmarks ────────────────────────────────────────────
         landmark_keywords = {
             "table_of_contents": ["table of contents", "contents"],
             "bibliography": ["bibliography", "references cited", "works cited"],
@@ -1375,7 +1518,7 @@ def verify_book(book_id: int) -> dict:
             "found": landmarks_found,
         }, landmark_issues)
 
-        # ── 7. Equations ────────────────────────────────────────────
+        # ── 8. Equations ────────────────────────────────────────────
         eq_table = f"data_{collections['equations']}"
         try:
             cur = conn.execute(
@@ -1401,7 +1544,7 @@ def verify_book(book_id: int) -> dict:
             "latex_in_content": latex_in_content,
         }, eq_issues)
 
-        # ── 8. Chapter Summaries ────────────────────────────────────
+        # ── 9. Chapter Summaries ────────────────────────────────────
         ch_table = f"data_{collections['chapters']}"
         try:
             cur = conn.execute(

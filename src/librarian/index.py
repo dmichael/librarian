@@ -238,6 +238,58 @@ def create_documents(
     return [Document(text=content, metadata=doc_metadata)]
 
 
+def _clean_code_text(text: str) -> str:
+    """Remove PDF line number artifacts from code blocks.
+
+    Handles two patterns marker produces from PDFs with line numbers:
+    1. Standalone lines: just a number on its own line (e.g., CTCI verbose blocks)
+    2. Inline prefixes: number at start of code line (e.g., "53 }" or "56 ArrayList<>")
+
+    Both are detected via sequential number patterns and stripped.
+    """
+    lines = text.split("\n")
+
+    # Pattern 1: standalone number lines
+    standalone_nums = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if re.match(r"^\d{1,4}$", stripped):
+            standalone_nums.append((i, int(stripped)))
+
+    if len(standalone_nums) >= 3 and len(standalone_nums) > len(lines) * 0.15:
+        nums = [n for _, n in standalone_nums]
+        diffs = [nums[i + 1] - nums[i] for i in range(len(nums) - 1)]
+        avg_diff = sum(diffs) / len(diffs) if diffs else 0
+        if 0 < avg_diff < 5:
+            remove = {i for i, _ in standalone_nums}
+            lines = [l for i, l in enumerate(lines) if i not in remove]
+            # Collapse runs of blank lines left behind
+            cleaned = []
+            for line in lines:
+                if line.strip() == "" and cleaned and cleaned[-1].strip() == "":
+                    continue
+                cleaned.append(line)
+            return "\n".join(cleaned)
+
+    # Pattern 2: inline number prefixes ("53 }", "56 ArrayList<String>")
+    prefix_nums = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\d{1,4}) (\S)", line)
+        if m:
+            prefix_nums.append((i, int(m.group(1))))
+
+    if len(prefix_nums) >= 2 and len(prefix_nums) > len(lines) * 0.1:
+        nums = [n for _, n in prefix_nums]
+        diffs = [nums[i + 1] - nums[i] for i in range(len(nums) - 1)]
+        avg_diff = sum(diffs) / len(diffs) if diffs else 0
+        if 0 < avg_diff < 5:
+            for i, _ in prefix_nums:
+                lines[i] = re.sub(r"^\d{1,4} ", "", lines[i])
+            return "\n".join(lines)
+
+    return text
+
+
 def create_nodes_from_blocks(
     blocks: list[dict],
     book_id: int,
@@ -280,9 +332,18 @@ def create_nodes_from_blocks(
         page = block.get("page")
         block_type = block.get("block_type", "Text")
 
-        # Split large blocks
+        # Code blocks: clean line number artifacts, never split
+        if block_type == "Code":
+            text = _clean_code_text(text)
+            node_meta = base_metadata.copy()
+            node_meta["page"] = page
+            node_meta["block_type"] = block_type
+            node_meta["_block_idx"] = block_idx
+            nodes.append(TextNode(text=text, metadata=node_meta))
+            continue
+
+        # Split large text blocks on paragraphs
         if len(text) > chunk_size * 1.5:
-            # Simple split on paragraphs or sentences
             parts = text.split("\n\n")
             current_chunk = ""
             for part in parts:
@@ -290,7 +351,7 @@ def create_nodes_from_blocks(
                     node_meta = base_metadata.copy()
                     node_meta["page"] = page
                     node_meta["block_type"] = block_type
-                    node_meta["_block_idx"] = block_idx  # Track original block
+                    node_meta["_block_idx"] = block_idx
                     nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
                     current_chunk = part
                 else:
@@ -299,13 +360,13 @@ def create_nodes_from_blocks(
                 node_meta = base_metadata.copy()
                 node_meta["page"] = page
                 node_meta["block_type"] = block_type
-                node_meta["_block_idx"] = block_idx  # Track original block
+                node_meta["_block_idx"] = block_idx
                 nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
         else:
             node_meta = base_metadata.copy()
             node_meta["page"] = page
             node_meta["block_type"] = block_type
-            node_meta["_block_idx"] = block_idx  # Track original block
+            node_meta["_block_idx"] = block_idx
             nodes.append(TextNode(text=text, metadata=node_meta))
 
     return nodes

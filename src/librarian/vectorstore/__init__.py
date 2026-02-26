@@ -24,11 +24,17 @@ from librarian.vectorstore.protocol import LibrarianVectorStore
 __all__ = ["LibrarianVectorStore", "get_vector_store"]
 
 
+_vector_store_instance: LibrarianVectorStore | None = None
+
+
 def get_vector_store(
     config: dict,
     default_collection: str | None = None,
 ) -> LibrarianVectorStore:
-    """Factory function to create the appropriate vector store backend.
+    """Get the singleton vector store backend.
+
+    Creates the store on first call; subsequent calls return the same instance.
+    This prevents connection leaks when called from multiple threads.
 
     Args:
         config: Application configuration dict
@@ -41,6 +47,10 @@ def get_vector_store(
         ValueError: If backend type is unknown
         ImportError: If required dependencies are not installed (e.g., lancedb)
     """
+    global _vector_store_instance
+    if _vector_store_instance is not None:
+        return _vector_store_instance
+
     vs_config = config.get("vector_store", {})
     backend = vs_config.get("backend", "qdrant-file")
 
@@ -48,16 +58,18 @@ def get_vector_store(
     if default_collection is None:
         default_collection = vs_config.get("collection", "librarian_full")
 
+    store: LibrarianVectorStore
+
     if backend == "qdrant-file":
         from librarian.vectorstore.qdrant_file import QdrantFileStore
 
         path = expand_path(vs_config.get("qdrant_path", "~/data/librarian/vectorstore/qdrant"))
-        return QdrantFileStore(path=path, default_collection=default_collection)
+        store = QdrantFileStore(path=path, default_collection=default_collection)
 
     elif backend == "qdrant-server":
         from librarian.vectorstore.qdrant_server import QdrantServerStore
 
-        return QdrantServerStore(
+        store = QdrantServerStore(
             host=vs_config.get("host", "localhost"),
             port=vs_config.get("port", 6333),
             api_key=vs_config.get("api_key"),
@@ -69,18 +81,18 @@ def get_vector_store(
         from librarian.vectorstore.lancedb_store import LanceDBStore
 
         uri = expand_path(vs_config.get("lancedb_path", "~/data/librarian/vectorstore/lancedb"))
-        return LanceDBStore(uri=uri, default_collection=default_collection)
+        store = LanceDBStore(uri=uri, default_collection=default_collection)
 
     elif backend == "chroma":
         from librarian.vectorstore.chroma_store import ChromaStore
 
         path = expand_path(vs_config.get("chroma_path", "~/data/librarian/vectorstore/chroma"))
-        return ChromaStore(path=path, default_collection=default_collection)
+        store = ChromaStore(path=path, default_collection=default_collection)
 
     elif backend == "pgvector":
         from librarian.vectorstore.pgvector_store import PgvectorStore
 
-        return PgvectorStore(
+        store = PgvectorStore(
             connection_string=vs_config.get(
                 "pgvector_url", "postgresql://localhost:5432/librarian"
             ),
@@ -93,6 +105,9 @@ def get_vector_store(
             f"Unknown vector store backend: {backend}. "
             "Valid options: qdrant-file, qdrant-server, lancedb, chroma, pgvector"
         )
+
+    _vector_store_instance = store
+    return store
 
 
 def get_collection_names(config: dict) -> dict[str, str]:

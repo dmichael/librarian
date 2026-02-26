@@ -58,20 +58,33 @@ class Book(Base):
         return f"<Book(id={self.id}, title='{self.title[:40]}', status='{self.status}')>"
 
 
+_engine = None
+_session_factory = None
+
+
 def get_engine(config: dict | None = None):
-    """Create SQLAlchemy engine from config."""
-    if config is None:
-        config = load_config()
-    url = config["vector_store"]["pgvector_url"]
-    # SQLAlchemy needs the +psycopg2 driver suffix
-    sa_url = url.replace("postgresql://", "postgresql+psycopg2://")
-    return create_engine(sa_url)
+    """Get the singleton SQLAlchemy engine.
+
+    Creates the engine on first call with a bounded connection pool.
+    Subsequent calls return the same engine regardless of config arg.
+    """
+    global _engine
+    if _engine is None:
+        if config is None:
+            config = load_config()
+        url = config["vector_store"]["pgvector_url"]
+        sa_url = url.replace("postgresql://", "postgresql+psycopg2://")
+        _engine = create_engine(sa_url, pool_size=10, max_overflow=5, pool_pre_ping=True)
+    return _engine
 
 
 def get_session(config: dict | None = None) -> Session:
-    """Create a new database session."""
-    engine = get_engine(config)
-    return sessionmaker(bind=engine)()
+    """Create a new database session from the shared engine."""
+    global _session_factory
+    if _session_factory is None:
+        engine = get_engine(config)
+        _session_factory = sessionmaker(bind=engine)
+    return _session_factory()
 
 
 def init_db(config: dict | None = None):
