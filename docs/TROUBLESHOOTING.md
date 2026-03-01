@@ -41,4 +41,5 @@ If the model configured in `config/settings*.yaml` isn’t present, pull it with
 
 ## Kindle ingestion / DRM
 
-See `HANDOFF.md` for current Kindle-specific status and known issues (KFX/DeDRM).
+See `docs/AGENT_CONTEXT.md` for current operational context and
+`docs/kindle-screenshot-capture.md` for Kindle capture workflow notes.

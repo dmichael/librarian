@@ -30,3 +30,6 @@ tools/plugins/
 *.swp
 .env
 .env.librarian
+
+# Local DB maintenance snapshots (created by scripts/db_safe_migrate.py)
+.db_backups/

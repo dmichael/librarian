@@ -1,10 +1,11 @@
 # Librarian
 
-Turn your book collection into a searchable knowledge base for AI agents.
+Give development agents primary, searchable, verifiable reference points.
 
-Librarian ingests PDFs and EPUBs, extracts them to structured markdown using
-cloud GPUs, embeds the content into pgvector, and exposes everything through an
-MCP server that any AI agent can query.
+Librarian registers source artifacts ("books"), ingests PDFs and EPUBs,
+extracts them to structured markdown using cloud GPUs, embeds the content into
+pgvector, and exposes everything through an MCP server that agents can query
+and verify against during development.
 
 ## How it works
 
@@ -27,6 +28,10 @@ MCP server that any AI agent can query.
 The entire pipeline is driven through MCP tools. Connect any MCP-compatible
 agent (Claude Code, Claude Desktop, custom agents) and it can upload books,
 run the pipeline, tag content, and search — all through tool calls.
+
+In this project, a "book" is the canonical registered unit of reference
+material (not only traditional books): manuals, specs, PDFs, EPUBs, and other
+long-form artifacts can all be tracked through the same lifecycle.
 
 ## MCP tools
 
@@ -132,6 +137,7 @@ cat > .env <<EOF
 LIBRARIAN_DB_URL=postgresql://host.docker.internal:5432/librarian
 LIBRARIAN_DATA_ROOT=/data/librarian
 LIBRARIAN_EMBEDDING_DEVICE=cpu
+LIBRARIAN_PUBLIC_URL=http://agents.local:8811
 EOF
 
 docker compose up
@@ -140,6 +146,50 @@ docker compose up
 The image bakes in the embedding model (~4.5 GB total) so there's no download
 at startup. Modal credentials for cloud extraction go in `.env` as
 `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
+
+## Deployment topology
+
+- Live app host: `agents.local` (Mac mini)
+- Live PostgreSQL host for Librarian: `agents.local`
+- Dev/agent sessions may run on another machine; verify target host before
+  operational commands.
+
+For safe migration workflow, see `docs/DB_MAINTENANCE.md`.
+
+### One-command deploy
+
+`make deploy` now performs:
+
+1. Docker build (tag defaults to `git describe --always --dirty`)
+2. Push to `agents.local:5000`
+3. Remote `docker compose -f docker-compose.prod.yml up -d` on `agents.local`
+
+Container startup runs `alembic upgrade head` before launching MCP server, so
+migrations are applied at boot (no separate migration step).
+
+Use preflight checks explicitly:
+
+```bash
+make deploy-preflight
+```
+
+`make deploy` also runs preflight automatically before build/push/deploy.
+
+Defaults in `Makefile`:
+
+- `REGISTRY=agents.local:5000`
+- `DEPLOY_HOST=agents.local`
+- `DEPLOY_PATH=/Users/dmichael/projects/librarian`
+
+Override example:
+
+```bash
+make deploy REGISTRY=agents.local:5000 DEPLOY_HOST=agents.local DEPLOY_PATH=/Users/dmichael/projects/librarian
+```
+
+Requirement on `agents.local`: `.env.librarian` must exist and include runtime
+settings (`LIBRARIAN_DB_URL`, `LIBRARIAN_DATA_ROOT`, `LIBRARIAN_PUBLIC_URL`,
+`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, etc.).
 
 ## Connecting to an agent
 

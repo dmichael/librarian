@@ -2,6 +2,10 @@
 
 This guide is optimized for “fresh machine / fresh clone” bootstrapping.
 
+Note: this document focuses on local CLI workflow. For current MCP/deployment
+workflow and host topology, see `README.md`, `docs/AGENT_CONTEXT.md`, and
+`docs/DB_MAINTENANCE.md`.
+
 ## 1) Prerequisites
 
 - Python 3.12+
@@ -76,9 +80,8 @@ The defaults in `config/settings.yaml` assume:
 
 ```
 ~/data/librarian/
-  calibre/      # Calibre library (source of truth)
-  converted/    # Extracted markdown by book id
-  qdrant/       # Local Qdrant persistence
-  source/       # Intake folders (e.g. Kindle sync)
+  calibre/          # Calibre library (format conversion source)
+  converted/        # Extracted markdown/JSON by book id
+  intake/ebooks/    # Upload/intake drop zone
+  intake/kindle/    # Optional Kindle intake
 ```
-

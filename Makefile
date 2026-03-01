@@ -9,7 +9,7 @@
 
 VENV := .venv/bin
 
-.PHONY: all status intake extract extract-cloud index clean help build run push deploy release
+.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot
 
 # Default: run full pipeline
 all: intake extract index
@@ -26,6 +26,11 @@ help:
 	@echo "  make index        Index extracted content to vector store"
 	@echo "  make build        Build Docker image"
 	@echo "  make run          Run with docker compose"
+	@echo "  make push         Build + push image to registry ($(REGISTRY))"
+	@echo "  make deploy-preflight  Check local/remote deploy prerequisites"
+	@echo "  make deploy       Build + push + remote compose up on $(DEPLOY_HOST)"
+	@echo "  make db-migrate-snapshot  Create safe DB snapshot (no migration)"
+	@echo "  make db-migrate-safe      Snapshot + apply Alembic migration safely"
 	@echo ""
 	@echo "Cloud extraction requires: pip install -e '.[cloud]' && modal setup"
 
@@ -66,22 +71,48 @@ clean-extracted-confirm:
 
 # === Container ===
 IMAGE ?= librarian
-TAG ?= latest
+TAG ?= $(shell git describe --always --dirty 2>/dev/null || date +%Y%m%d%H%M%S)
+REGISTRY ?= agents.local:5000
+DEPLOY_HOST ?= agents.local
+DEPLOY_PATH ?= /Users/dmichael/projects/librarian
+IMAGE_REF := $(REGISTRY)/$(IMAGE):$(TAG)
+REMOTE_SHELL ?= /bin/zsh -lc
 
 build:
 	docker build -t $(IMAGE):$(TAG) .
+	docker tag $(IMAGE):$(TAG) $(IMAGE_REF)
 
 run:
 	docker compose up
 
-# Push to a registry (set REGISTRY env var, e.g. REGISTRY=myregistry.example.com:5000)
+# DB migration safety workflow (host-local, no /tmp snapshots)
+db-migrate-snapshot:
+	@$(VENV)/python scripts/db_safe_migrate.py
+
+db-migrate-safe:
+	@$(VENV)/python scripts/db_safe_migrate.py --apply
+
+# Push to the deployment registry
 push: build
-ifdef REGISTRY
-	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(TAG)
-	docker push $(REGISTRY)/$(IMAGE):$(TAG)
-else
-	@echo "Set REGISTRY to push. Example: make push REGISTRY=myregistry:5000"
-endif
+	docker push $(IMAGE_REF)
+
+deploy-preflight:
+	@echo "Preflight: local checks"
+	@command -v docker >/dev/null || (echo "ERROR: docker not found"; exit 1)
+	@command -v ssh >/dev/null || (echo "ERROR: ssh not found"; exit 1)
+	@command -v git >/dev/null || (echo "ERROR: git not found"; exit 1)
+	@docker info >/dev/null 2>&1 || (echo "ERROR: docker daemon not reachable"; exit 1)
+	@test -f Dockerfile || (echo "ERROR: Dockerfile missing in repo root"; exit 1)
+	@test -f docker-compose.prod.yml || (echo "ERROR: docker-compose.prod.yml missing in repo root"; exit 1)
+	@echo "Preflight: remote checks on $(DEPLOY_HOST)"
+	@ssh -o BatchMode=yes -o ConnectTimeout=10 $(DEPLOY_HOST) "$(REMOTE_SHELL) 'set -e; \
+		command -v docker >/dev/null; \
+		docker info >/dev/null 2>&1; \
+		docker compose version >/dev/null 2>&1; \
+		test -d $(DEPLOY_PATH); \
+		test -f $(DEPLOY_PATH)/docker-compose.prod.yml; \
+		test -f $(DEPLOY_PATH)/.env.librarian'"
+	@echo "Preflight passed."
 
 # Release a versioned tag (e.g. make release V=0.1.0 REGISTRY=myregistry:5000)
 release:
@@ -90,3 +121,7 @@ release:
 	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(V)
 	docker push $(REGISTRY)/$(IMAGE):$(V)
 	@echo "Pushed $(REGISTRY)/$(IMAGE):$(V)"
+
+deploy: deploy-preflight push
+	@echo "Deploying $(IMAGE_REF) to $(DEPLOY_HOST)..."
+	@ssh $(DEPLOY_HOST) "$(REMOTE_SHELL) 'set -e; cd $(DEPLOY_PATH); LIBRARIAN_IMAGE=$(IMAGE_REF) docker compose -f docker-compose.prod.yml up -d --remove-orphans; docker compose -f docker-compose.prod.yml ps'"

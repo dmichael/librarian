@@ -6,4 +6,4 @@ services:
       - "8811:8811"
     env_file: .env
     volumes:
-      - ~/data/librarian:/data/librarian
+      - ${HOME}/data/librarian:/data/librarian
