@@ -22,6 +22,14 @@ from mcp.server.fastmcp import FastMCP
 
 from librarian.config import load_config
 from librarian.db import Book, get_session
+from librarian.metadata_types import (
+    META_BOOK_ID,
+    META_LIBRARY,
+    META_SUBJECTS,
+    build_search_result_row,
+    build_text_search_result_row,
+    serialize_list_metadata,
+)
 
 log = logging.getLogger(__name__)
 
@@ -147,22 +155,17 @@ def search(
 
     # If book_id filter requested, apply post-hoc (pgvector metadata filter)
     if book_id is not None:
-        nodes = [n for n in nodes if n.metadata.get("book_id") == book_id]
+        nodes = [n for n in nodes if n.metadata.get(META_BOOK_ID) == book_id]
 
     results = []
     for node in nodes:
-        meta = node.metadata
-        results.append({
-            "text": node.text,
-            "score": round(node.score, 4),
-            "title": meta.get("title", "Unknown"),
-            "authors": meta.get("authors", ""),
-            "book_id": meta.get("book_id"),
-            "page": meta.get("page"),
-            "chapter_num": meta.get("chapter_num"),
-            "chapter_title": meta.get("chapter_title", ""),
-            "block_type": meta.get("block_type", ""),
-        })
+        results.append(
+            build_search_result_row(
+                text=node.text,
+                score=node.score,
+                metadata=node.metadata,
+            )
+        )
 
     return results
 
@@ -202,16 +205,7 @@ def text_search(
 
     results = []
     for text, meta in rows:
-        results.append({
-            "text": text,
-            "title": meta.get("title", "Unknown"),
-            "authors": meta.get("authors", ""),
-            "book_id": meta.get("book_id"),
-            "page": meta.get("page"),
-            "chapter_num": meta.get("chapter_num"),
-            "chapter_title": meta.get("chapter_title", ""),
-            "library": meta.get("library", ""),
-        })
+        results.append(build_text_search_result_row(text=text, metadata=meta))
 
     return results
 
@@ -626,8 +620,6 @@ def update_book(
         subjects: Subject tags (replaces existing)
         library: Library/collection name
     """
-    import json
-
     config = _get_config()
     session = get_session(config)
     try:
@@ -649,9 +641,9 @@ def update_book(
         # Propagate searchable metadata to pgvector chunks
         vector_updates = {}
         if library is not None:
-            vector_updates["library"] = library
+            vector_updates[META_LIBRARY] = library
         if subjects is not None:
-            vector_updates["subjects"] = json.dumps(subjects)
+            vector_updates[META_SUBJECTS] = serialize_list_metadata(subjects)
 
         chunks_updated = 0
         if vector_updates:

@@ -47,6 +47,18 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 from librarian.config import expand_path, load_config
+from librarian.metadata_types import (
+    META_BLOCK_INDEX,
+    META_BREADCRUMB,
+    META_CHAPTER_NUM,
+    META_CHAPTER_TITLE,
+    META_PAGE,
+    META_SECTION_TITLE,
+    build_base_node_metadata,
+    build_chapter_node_metadata,
+    serialize_list_metadata as contract_serialize_list_metadata,
+    with_block_metadata,
+)
 from librarian.files import find_content_json, find_markdown
 from librarian import calibre
 from librarian.vectorstore import get_vector_store, get_collection_names
@@ -206,9 +218,7 @@ def serialize_list_metadata(value) -> str:
     LanceDB doesn't support list values in metadata, so we serialize
     lists to JSON strings. This works with all backends.
     """
-    if isinstance(value, list):
-        return json.dumps(value)
-    return value
+    return contract_serialize_list_metadata(value)
 
 
 def create_documents(
@@ -217,22 +227,7 @@ def create_documents(
     metadata: dict,
 ) -> list[Document]:
     """Create LlamaIndex documents with metadata."""
-    # Build metadata for the document
-    # Lists are serialized to JSON strings for LanceDB compatibility
-    subjects = metadata.get("subjects", [])
-    tags = metadata.get("tags", [])
-    library = metadata.get("*library", "") or ""
-
-    doc_metadata = {
-        "book_id": book_id,
-        "title": metadata.get("title", "Unknown"),
-        "authors": ", ".join(metadata.get("authors", [])),
-        "tags": serialize_list_metadata(tags),
-        "publisher": metadata.get("publisher", ""),
-        "subjects": serialize_list_metadata(subjects),
-        "library": library,  # Bounded collection for agent access
-        "source_path": metadata.get("source_path", ""),
-    }
+    doc_metadata = build_base_node_metadata(book_id=book_id, metadata=metadata)
 
     # Create a single document - chunking happens via node parser
     return [Document(text=content, metadata=doc_metadata)]
@@ -311,20 +306,7 @@ def create_nodes_from_blocks(
         List of TextNode objects ready for indexing.
         Each node has _block_idx in metadata for chapter lookup.
     """
-    subjects = metadata.get("subjects", [])
-    tags = metadata.get("tags", [])
-    library = metadata.get("*library", "") or ""
-
-    base_metadata = {
-        "book_id": book_id,
-        "title": metadata.get("title", "Unknown"),
-        "authors": ", ".join(metadata.get("authors", [])),
-        "tags": serialize_list_metadata(tags),
-        "publisher": metadata.get("publisher", ""),
-        "subjects": serialize_list_metadata(subjects),
-        "library": library,
-        "source_path": metadata.get("source_path", ""),
-    }
+    base_metadata = build_base_node_metadata(book_id=book_id, metadata=metadata)
 
     nodes = []
     for block_idx, block in enumerate(blocks):
@@ -335,10 +317,12 @@ def create_nodes_from_blocks(
         # Code blocks: clean line number artifacts, never split
         if block_type == "Code":
             text = _clean_code_text(text)
-            node_meta = base_metadata.copy()
-            node_meta["page"] = page
-            node_meta["block_type"] = block_type
-            node_meta["_block_idx"] = block_idx
+            node_meta = with_block_metadata(
+                base_metadata,
+                page=page,
+                block_type=block_type,
+                block_idx=block_idx,
+            )
             nodes.append(TextNode(text=text, metadata=node_meta))
             continue
 
@@ -348,25 +332,31 @@ def create_nodes_from_blocks(
             current_chunk = ""
             for part in parts:
                 if len(current_chunk) + len(part) > chunk_size and current_chunk:
-                    node_meta = base_metadata.copy()
-                    node_meta["page"] = page
-                    node_meta["block_type"] = block_type
-                    node_meta["_block_idx"] = block_idx
+                    node_meta = with_block_metadata(
+                        base_metadata,
+                        page=page,
+                        block_type=block_type,
+                        block_idx=block_idx,
+                    )
                     nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
                     current_chunk = part
                 else:
                     current_chunk += "\n\n" + part if current_chunk else part
             if current_chunk.strip():
-                node_meta = base_metadata.copy()
-                node_meta["page"] = page
-                node_meta["block_type"] = block_type
-                node_meta["_block_idx"] = block_idx
+                node_meta = with_block_metadata(
+                    base_metadata,
+                    page=page,
+                    block_type=block_type,
+                    block_idx=block_idx,
+                )
                 nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
         else:
-            node_meta = base_metadata.copy()
-            node_meta["page"] = page
-            node_meta["block_type"] = block_type
-            node_meta["_block_idx"] = block_idx
+            node_meta = with_block_metadata(
+                base_metadata,
+                page=page,
+                block_type=block_type,
+                block_idx=block_idx,
+            )
             nodes.append(TextNode(text=text, metadata=node_meta))
 
     return nodes
@@ -509,9 +499,6 @@ def index_chapters(
     if not structure.chapters:
         return 0
 
-    book_id = metadata.get("id", 0)
-    book_title = metadata.get("title", "Unknown")
-
     nodes = []
     for chapter in structure.chapters:
         # Extract chapter text and generate summary
@@ -541,17 +528,14 @@ def index_chapters(
 
         node = TextNode(
             text=searchable_text,
-            metadata={
-                "book_id": book_id,
-                "title": book_title,
-                "chapter_num": chapter.number,
-                "chapter_title": chapter.title,
-                "summary": summary,
-                "page_range": page_range,
-                "section_titles": serialize_list_metadata(section_titles),
-                "subjects": serialize_list_metadata(metadata.get("subjects", [])),
-                "library": metadata.get("*library", "") or "",
-            },
+            metadata=build_chapter_node_metadata(
+                metadata=metadata,
+                chapter_num=chapter.number,
+                chapter_title=chapter.title,
+                summary=summary,
+                page_range=page_range,
+                section_titles=section_titles,
+            ),
         )
         nodes.append(node)
 
@@ -689,24 +673,24 @@ def index_book(
         nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size)
         # Use BLOCK INDEX for chapter assignment (page numbers may be scrambled)
         for node in nodes:
-            block_idx = node.metadata.pop("_block_idx", None)  # Remove internal field
+            block_idx = node.metadata.pop(META_BLOCK_INDEX, None)  # Remove internal field
 
             # Look up chapter by block index (more reliable than page)
             chapter = get_chapter_for_block(structure, block_idx) if block_idx is not None else None
 
             if chapter:
-                node.metadata["chapter_num"] = chapter.number
-                node.metadata["chapter_title"] = chapter.title
-                node.metadata["section_title"] = ""  # TODO: section tracking
-                node.metadata["breadcrumb"] = chapter.breadcrumb
+                node.metadata[META_CHAPTER_NUM] = chapter.number
+                node.metadata[META_CHAPTER_TITLE] = chapter.title
+                node.metadata[META_SECTION_TITLE] = ""  # TODO: section tracking
+                node.metadata[META_BREADCRUMB] = chapter.breadcrumb
             else:
                 # Fallback to page-based lookup
-                page = node.metadata.get("page")
+                page = node.metadata.get(META_PAGE)
                 context = get_context_for_page(structure, page)
-                node.metadata["chapter_num"] = context["chapter_num"]
-                node.metadata["chapter_title"] = context["chapter_title"]
-                node.metadata["section_title"] = context["section_title"]
-                node.metadata["breadcrumb"] = context["breadcrumb"]
+                node.metadata[META_CHAPTER_NUM] = context["chapter_num"]
+                node.metadata[META_CHAPTER_TITLE] = context["chapter_title"]
+                node.metadata[META_SECTION_TITLE] = context["section_title"]
+                node.metadata[META_BREADCRUMB] = context["breadcrumb"]
     else:
         # Fallback: use markdown content with text-based chunking
         documents = create_documents(book_id, content, metadata)
@@ -741,17 +725,17 @@ def index_book(
             page = extract_page_number(node.text)
             if page:
                 last_known_page = page
-            node.metadata["page"] = last_known_page
+            node.metadata[META_PAGE] = last_known_page
 
             # Add hierarchical context from document structure
             context = get_context_for_page(structure, last_known_page)
-            node.metadata["chapter_num"] = context["chapter_num"]
-            node.metadata["chapter_title"] = context["chapter_title"]
-            node.metadata["section_title"] = context["section_title"]
-            node.metadata["breadcrumb"] = context["breadcrumb"]
+            node.metadata[META_CHAPTER_NUM] = context["chapter_num"]
+            node.metadata[META_CHAPTER_TITLE] = context["chapter_title"]
+            node.metadata[META_SECTION_TITLE] = context["section_title"]
+            node.metadata[META_BREADCRUMB] = context["breadcrumb"]
 
     # Validate chapter coverage in nodes
-    nodes_with_chapter = sum(1 for n in nodes if n.metadata.get("chapter_num"))
+    nodes_with_chapter = sum(1 for n in nodes if n.metadata.get(META_CHAPTER_NUM))
     coverage = nodes_with_chapter / len(nodes) if nodes else 0
     if coverage < 0.5 and len(nodes) > 10:
         print(f"  [WARNING] Only {coverage:.0%} of chunks have chapter metadata", file=sys.stderr)

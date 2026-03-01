@@ -15,6 +15,14 @@ from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, Filt
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from librarian.config import load_config
+from librarian.metadata_types import (
+    META_BLOCK_TYPE,
+    META_BOOK_ID,
+    META_CHAPTER_NUM,
+    META_LIBRARY,
+    META_SUBJECTS,
+    normalize_subject_filter,
+)
 from librarian.vectorstore import get_vector_store, get_collection_names
 from librarian.vectorstore.protocol import LibrarianVectorStore
 
@@ -94,47 +102,7 @@ def setup_retriever(
     # Create index from existing store
     index = VectorStoreIndex.from_vector_store(vector_store)
 
-    # Build filters if subjects or library specified
-    filters = None
-    filter_list = []
-
-    # Library filter (exact match, AND with subjects)
-    if library:
-        filter_list.append(
-            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
-        )
-
-    # Block type filter (exact match)
-    if block_type:
-        filter_list.append(
-            MetadataFilter(key="block_type", value=block_type, operator=FilterOperator.EQ)
-        )
-
-    # Subject filters (OR among subjects)
-    if subjects:
-        # Qdrant supports: EQ, NE, GT, GTE, LT, LTE, IN, NIN, TEXT_MATCH, IS_EMPTY
-        subject_filters = []
-        for subj in subjects:
-            if subj.endswith("/*"):
-                # Wildcard match: "psychology/*" matches "psychology/therapy"
-                prefix = subj[:-2]
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=prefix, operator=FilterOperator.TEXT_MATCH)
-                )
-            else:
-                # Exact match
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=subj, operator=FilterOperator.TEXT_MATCH)
-                )
-        # If we have library filter, we need to AND it with OR'd subjects
-        if library and subject_filters:
-            # Library AND (subject1 OR subject2 OR ...)
-            filter_list.append(MetadataFilters(filters=subject_filters, condition="or"))
-            filters = MetadataFilters(filters=filter_list, condition="and")
-        elif subject_filters:
-            filters = MetadataFilters(filters=subject_filters, condition="or")
-    elif filter_list:
-        filters = MetadataFilters(filters=filter_list, condition="and")
+    filters = _build_filters(subjects, library, block_type)
 
     # Return retriever (no LLM needed)
     return index.as_retriever(similarity_top_k=top_k, filters=filters)
@@ -233,8 +201,8 @@ def retrieve(
         # Filter equations to only those from same books as top text results
         # This prevents cross-contamination (e.g., birdsong equations in finance queries)
         if text_nodes and eq_nodes:
-            relevant_book_ids = {n.metadata.get("book_id") for n in text_nodes[:3]}
-            eq_nodes = [e for e in eq_nodes if e.metadata.get("book_id") in relevant_book_ids]
+            relevant_book_ids = {n.metadata.get(META_BOOK_ID) for n in text_nodes[:3]}
+            eq_nodes = [e for e in eq_nodes if e.metadata.get(META_BOOK_ID) in relevant_book_ids]
     else:
         eq_nodes = []
 
@@ -245,32 +213,34 @@ def retrieve(
     return all_nodes
 
 
+def _build_subject_filters(subjects: list[str]) -> list[MetadataFilter]:
+    """Build OR-able subject filters with wildcard prefix support."""
+    return [
+        MetadataFilter(
+            key=META_SUBJECTS,
+            value=normalize_subject_filter(subj),
+            operator=FilterOperator.TEXT_MATCH,
+        )
+        for subj in subjects
+    ]
+
+
 def _build_filters(subjects: list[str] | None, library: str | None, block_type: str | None = None):
     """Build metadata filters for retrieval."""
     filter_list = []
 
     if library:
         filter_list.append(
-            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
+            MetadataFilter(key=META_LIBRARY, value=library, operator=FilterOperator.EQ)
         )
 
     if block_type:
         filter_list.append(
-            MetadataFilter(key="block_type", value=block_type, operator=FilterOperator.EQ)
+            MetadataFilter(key=META_BLOCK_TYPE, value=block_type, operator=FilterOperator.EQ)
         )
 
     if subjects:
-        subject_filters = []
-        for subj in subjects:
-            if subj.endswith("/*"):
-                prefix = subj[:-2]
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=prefix, operator=FilterOperator.TEXT_MATCH)
-                )
-            else:
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=subj, operator=FilterOperator.TEXT_MATCH)
-                )
+        subject_filters = _build_subject_filters(subjects)
         if library and subject_filters:
             filter_list.append(MetadataFilters(filters=subject_filters, condition="or"))
             return MetadataFilters(filters=filter_list, condition="and")
@@ -336,7 +306,7 @@ def retrieve_chapters(
     # Add book_id filter if specified
     if book_id:
         filters = MetadataFilters(
-            filters=[MetadataFilter(key="book_id", value=book_id, operator=FilterOperator.EQ)]
+            filters=[MetadataFilter(key=META_BOOK_ID, value=book_id, operator=FilterOperator.EQ)]
         )
         ch_retriever = ch_retriever.index.as_retriever(similarity_top_k=top_k, filters=filters)
 
@@ -400,11 +370,11 @@ def retrieve_chapters_ordered(
     filter_list = []
     if book_id:
         filter_list.append(
-            MetadataFilter(key="book_id", value=book_id, operator=FilterOperator.EQ)
+            MetadataFilter(key=META_BOOK_ID, value=book_id, operator=FilterOperator.EQ)
         )
     if library:
         filter_list.append(
-            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
+            MetadataFilter(key=META_LIBRARY, value=library, operator=FilterOperator.EQ)
         )
 
     if filter_list:
@@ -416,7 +386,7 @@ def retrieve_chapters_ordered(
     # Apply ordering
     if order_by == "first":
         # Sort by chapter number ascending (earliest chapters first)
-        nodes.sort(key=lambda n: n.metadata.get("chapter_num", 999))
+        nodes.sort(key=lambda n: n.metadata.get(META_CHAPTER_NUM, 999))
     elif order_by in ("depth", "relevance"):
         # Already sorted by relevance from vector search
         pass
@@ -464,7 +434,7 @@ def retrieve_hierarchical(
     # Extract chapter numbers from results
     chapter_nums = []
     for node in chapter_nodes:
-        ch_num = node.metadata.get("chapter_num")
+        ch_num = node.metadata.get(META_CHAPTER_NUM)
         if ch_num is not None:
             chapter_nums.append(ch_num)
 
@@ -496,7 +466,7 @@ def retrieve_hierarchical(
 
     # Build filter for chapter numbers
     chapter_filter = MetadataFilter(
-        key="chapter_num",
+        key=META_CHAPTER_NUM,
         value=chapter_nums,
         operator=FilterOperator.IN
     )
@@ -505,20 +475,10 @@ def retrieve_hierarchical(
     filter_list = [chapter_filter]
     if library:
         filter_list.append(
-            MetadataFilter(key="library", value=library, operator=FilterOperator.EQ)
+            MetadataFilter(key=META_LIBRARY, value=library, operator=FilterOperator.EQ)
         )
     if subjects:
-        subject_filters = []
-        for subj in subjects:
-            if subj.endswith("/*"):
-                prefix = subj[:-2]
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=prefix, operator=FilterOperator.TEXT_MATCH)
-                )
-            else:
-                subject_filters.append(
-                    MetadataFilter(key="subjects", value=subj, operator=FilterOperator.TEXT_MATCH)
-                )
+        subject_filters = _build_subject_filters(subjects)
         if subject_filters:
             filter_list.append(MetadataFilters(filters=subject_filters, condition="or"))
 
@@ -543,8 +503,8 @@ def retrieve_hierarchical(
 
         # Filter to same books as text results
         if text_nodes and eq_nodes:
-            relevant_book_ids = {n.metadata.get("book_id") for n in text_nodes[:3]}
-            eq_nodes = [e for e in eq_nodes if e.metadata.get("book_id") in relevant_book_ids]
+            relevant_book_ids = {n.metadata.get(META_BOOK_ID) for n in text_nodes[:3]}
+            eq_nodes = [e for e in eq_nodes if e.metadata.get(META_BOOK_ID) in relevant_book_ids]
     else:
         eq_nodes = []
 

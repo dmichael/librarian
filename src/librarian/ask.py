@@ -6,6 +6,19 @@ import sys
 import httpx
 
 from librarian.config import expand_path, load_config
+from librarian.metadata_types import (
+    META_BREADCRUMB,
+    META_CHAPTER_NUM,
+    META_CHAPTER_TITLE,
+    META_LIBRARY,
+    META_PAGE,
+    META_RESULT_TYPE,
+    META_SECTION_TITLE,
+    META_SECTION_TITLES,
+    META_SOURCE_PATH,
+    META_START_PAGE,
+    META_TITLE,
+)
 from librarian.query import retrieve, retrieve_chapters_ordered, retrieve_hierarchical
 
 
@@ -132,13 +145,13 @@ def _build_chapter_context(chapter_nodes: list) -> tuple[str, list]:
     citations = []
 
     for i, node in enumerate(chapter_nodes, 1):
-        title = node.metadata.get("title", "Unknown")
-        chapter_num = node.metadata.get("chapter_num")
-        chapter_title = node.metadata.get("chapter_title", "")
-        section_titles = node.metadata.get("section_titles", [])
-        library_name = node.metadata.get("library", "")
-        start_page = node.metadata.get("start_page")
-        source_path = node.metadata.get("source_path", "")
+        title = node.metadata.get(META_TITLE, "Unknown")
+        chapter_num = node.metadata.get(META_CHAPTER_NUM)
+        chapter_title = node.metadata.get(META_CHAPTER_TITLE, "")
+        section_titles = node.metadata.get(META_SECTION_TITLES, [])
+        library_name = node.metadata.get(META_LIBRARY, "")
+        start_page = node.metadata.get(META_START_PAGE)
+        source_path = node.metadata.get(META_SOURCE_PATH, "")
 
         # Chapter summary is stored in node.text
         summary = node.text[:600] if node.text else ""
@@ -323,17 +336,17 @@ def _build_content_context(nodes: list) -> tuple[str, list]:
     citations = []
 
     for i, node in enumerate(nodes, 1):
-        title = node.metadata.get("title", "Unknown")
-        page = node.metadata.get("page")
-        library_name = node.metadata.get("library", "")
-        result_type = node.metadata.get("_result_type", "text")
+        title = node.metadata.get(META_TITLE, "Unknown")
+        page = node.metadata.get(META_PAGE)
+        library_name = node.metadata.get(META_LIBRARY, "")
+        result_type = node.metadata.get(META_RESULT_TYPE, "text")
         is_equation = result_type == "equation"
 
         # Get hierarchical context
-        breadcrumb = node.metadata.get("breadcrumb", "")
-        chapter_num = node.metadata.get("chapter_num")
-        chapter_title = node.metadata.get("chapter_title", "")
-        section_title = node.metadata.get("section_title", "")
+        breadcrumb = node.metadata.get(META_BREADCRUMB, "")
+        chapter_num = node.metadata.get(META_CHAPTER_NUM)
+        chapter_title = node.metadata.get(META_CHAPTER_TITLE, "")
+        section_title = node.metadata.get(META_SECTION_TITLE, "")
 
         # For equations, use context_window; for text, use node.text
         if is_equation:
@@ -363,7 +376,7 @@ def _build_content_context(nodes: list) -> tuple[str, list]:
                 quote += "..."
 
         # Build PDF link with page anchor
-        source_path = node.metadata.get("source_path", "")
+        source_path = node.metadata.get(META_SOURCE_PATH, "")
         if source_path and page:
             pdf_link = f"file://{source_path}#page={page}"
         elif source_path:

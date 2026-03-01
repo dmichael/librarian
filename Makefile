@@ -8,8 +8,9 @@
 #   make index        - Index extracted books to vector store
 
 VENV := .venv/bin
+PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot
+.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline
 
 # Default: run full pipeline
 all: intake extract index
@@ -29,6 +30,7 @@ help:
 	@echo "  make push         Build + push image to registry ($(REGISTRY))"
 	@echo "  make deploy-preflight  Check local/remote deploy prerequisites"
 	@echo "  make deploy       Build + push + remote compose up on $(DEPLOY_HOST)"
+	@echo "  make test-baseline Run local characterization tests (unittest)"
 	@echo "  make db-migrate-snapshot  Create safe DB snapshot (no migration)"
 	@echo "  make db-migrate-safe      Snapshot + apply Alembic migration safely"
 	@echo ""
@@ -85,12 +87,15 @@ build:
 run:
 	docker compose up
 
+test-baseline:
+	@PYTHONPATH=src $(PYTHON) -m unittest discover -s tests_baseline -p "test_*.py" -v
+
 # DB migration safety workflow (host-local, no /tmp snapshots)
 db-migrate-snapshot:
-	@$(VENV)/python scripts/db_safe_migrate.py
+	@$(PYTHON) scripts/db_safe_migrate.py
 
 db-migrate-safe:
-	@$(VENV)/python scripts/db_safe_migrate.py --apply
+	@$(PYTHON) scripts/db_safe_migrate.py --apply
 
 # Push to the deployment registry
 push: build
