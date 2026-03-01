@@ -10,7 +10,7 @@
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline
+.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality
 
 # Default: run full pipeline
 all: intake extract index
@@ -31,6 +31,7 @@ help:
 	@echo "  make deploy-preflight  Check local/remote deploy prerequisites"
 	@echo "  make deploy       Build + push + remote compose up on $(DEPLOY_HOST)"
 	@echo "  make test-baseline Run local characterization tests (unittest)"
+	@echo "  make test-retrieval-quality Run focused retrieval quality smoke tests"
 	@echo "  make db-migrate-snapshot  Create safe DB snapshot (no migration)"
 	@echo "  make db-migrate-safe      Snapshot + apply Alembic migration safely"
 	@echo ""
@@ -89,6 +90,9 @@ run:
 
 test-baseline:
 	@PYTHONPATH=src $(PYTHON) -m unittest discover -s tests_baseline -p "test_*.py" -v
+
+test-retrieval-quality:
+	@PYTHONPATH=src $(PYTHON) -m unittest discover -s tests_quality -p "test_*.py" -v
 
 # DB migration safety workflow (host-local, no /tmp snapshots)
 db-migrate-snapshot:
