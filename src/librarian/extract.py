@@ -1,8 +1,15 @@
-"""Extract content from Calibre library to markdown."""
+"""Extract content from Calibre library to markdown.
 
-import fcntl
+PDF extraction is delegated to remote marker services — either the
+LAN-resident Spark marker HTTP service (--spark) or Modal A100s
+(--cloud). The local marker_single CLI path was removed: the
+production runtime (agents.local, MCP frontend) has no GPU and
+should not be co-located with ML workloads, and the dev seat is
+on the same LAN as the Spark anyway. One of --spark / --cloud is
+required for any extraction run.
+"""
+
 import hashlib
-import os
 import subprocess
 import sys
 import time
@@ -67,40 +74,6 @@ def compute_file_hash(file_path: Path) -> str:
 DIRECT_FORMATS = [".epub", ".pdf"]
 # Formats that need conversion to EPUB first
 KINDLE_FORMATS = [".azw3", ".azw", ".mobi", ".kfx"]
-
-# Lock for serializing marker_single calls (surya crashes with concurrent MPS access)
-MARKER_LOCK = Path("/tmp/librarian-marker.lock")
-LOCK_STALE_SECONDS = 3600  # Consider lock stale after 1 hour
-
-
-def _is_lock_stale(lock_path: Path) -> bool:
-    """Check if lock file is stale (holder crashed)."""
-    if not lock_path.exists():
-        return False
-    try:
-        mtime = lock_path.stat().st_mtime
-        if time.time() - mtime > LOCK_STALE_SECONDS:
-            return True
-        # Try non-blocking lock to see if it's held
-        with open(lock_path, "w") as f:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(f, fcntl.LOCK_UN)
-                return True  # Lock was free = previous holder crashed
-            except BlockingIOError:
-                return False  # Lock is actively held
-    except (OSError, IOError):
-        return True  # Can't check = assume stale
-
-
-def _clear_stale_lock(lock_path: Path):
-    """Remove stale lock file."""
-    try:
-        lock_path.unlink()
-        print(f"Cleared stale lock: {lock_path}")
-    except FileNotFoundError:
-        pass
-
 
 def get_source_file(book: dict) -> tuple[Path | None, bool]:
     """Get the source file path from Calibre book record.
@@ -180,62 +153,6 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
     return compute_file_hash(source_file) != stored_hash
 
 
-def find_marker_single() -> str:
-    """Find marker_single executable, checking venv first."""
-    import shutil
-
-    # Check if marker_single is in PATH
-    marker = shutil.which("marker_single")
-    if marker:
-        return marker
-
-    # Check in the same venv as this script
-    venv_bin = Path(sys.executable).parent
-    marker_in_venv = venv_bin / "marker_single"
-    if marker_in_venv.exists():
-        return str(marker_in_venv)
-
-    return "marker_single"  # Fall back to PATH lookup
-
-
-def _run_marker(source: Path, output_dir: Path, output_format: str) -> bool:
-    """Run marker_single with specified output format (serialized via lock).
-
-    Args:
-        source: Path to PDF file
-        output_dir: Directory for output
-        output_format: 'markdown' or 'json'
-
-    Returns:
-        True if successful, False otherwise
-    """
-    marker_cmd = find_marker_single()
-    cmd = [
-        marker_cmd,
-        str(source),
-        "--output_dir", str(output_dir),
-        "--output_format", output_format,
-    ]
-
-    # Clear stale lock if previous process crashed
-    if _is_lock_stale(MARKER_LOCK):
-        _clear_stale_lock(MARKER_LOCK)
-
-    # Serialize marker_single - surya crashes with concurrent MPS access
-    with open(MARKER_LOCK, "w") as lock:
-        lock.write(f"{os.getpid()}\n")
-        lock.flush()
-
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            # Run marker directly - let it inherit stdout/stderr for tqdm progress bars
-            result = subprocess.run(cmd)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-
-    return result.returncode == 0
-
-
 def _chunks_to_markdown(chunks_path: Path) -> str:
     """Convert marker chunks output to markdown.
 
@@ -274,92 +191,29 @@ def _chunks_to_markdown(chunks_path: Path) -> str:
     return "\n\n".join(lines)
 
 
-def _collect_marker_output(output_dir: Path) -> bool:
-    """Collect marker output and rename to predictable names.
-
-    Marker creates a subdirectory with variable names based on the PDF filename.
-    This function moves the files to predictable names:
-    - {book_id}.json: Content blocks
-    - {book_id}_meta.json: Document metadata
-
-    Args:
-        output_dir: Book output directory (e.g., converted/153/)
-
-    Returns:
-        True if content file was found and moved, False otherwise
-    """
-    book_id = output_dir.name  # Directory name is the book ID
-
-    # Find marker's content JSON (not ending in _meta.json)
-    content_file = None
-    meta_file = None
-    marker_subdir = None
-
-    for json_file in output_dir.rglob("*.json"):
-        if json_file.parent == output_dir:
-            continue  # Skip files already at top level
-        marker_subdir = json_file.parent
-        if json_file.name.endswith("_meta.json"):
-            meta_file = json_file
-        else:
-            content_file = json_file
-
-    if not content_file:
-        return False
-
-    # Move to predictable names
-    content_file.rename(output_dir / f"{book_id}.json")
-    if meta_file:
-        meta_file.rename(output_dir / f"{book_id}_meta.json")
-
-    # Clean up empty marker subdirectory
-    if marker_subdir and marker_subdir.exists():
-        try:
-            marker_subdir.rmdir()
-        except OSError:
-            pass  # Not empty, leave it
-
-    return True
-
-
-def extract_pdf(source: Path, output_dir: Path, use_spark: bool = False) -> bool:
-    """Extract PDF using marker chunks format.
+def extract_pdf(source: Path, output_dir: Path) -> bool:
+    """Extract PDF to chunks JSON via the Spark marker HTTP service.
 
     Produces:
     - {book_id}.json: Content blocks
     - {book_id}_meta.json: Document metadata
     - {book_id}.md: Markdown for human reading
 
-    When use_spark=True, dispatches to the Spark marker HTTP service
-    instead of running marker_single locally on this host.
+    Per-book dispatch only happens for the --spark path; the --cloud
+    (Modal) path runs as a separate batch in main() before per-book
+    iteration starts.
     """
-    try:
-        if use_spark:
-            from librarian.spark_extract import extract_pdf_via_spark
-            if not extract_pdf_via_spark(source, output_dir):
-                return False
-        else:
-            print("  Extracting with marker (chunks format)...", flush=True)
-            if not _run_marker(source, output_dir, "chunks"):
-                print("marker_single failed", file=sys.stderr)
-                return False
+    from librarian.spark_extract import extract_pdf_via_spark
 
-            if not _collect_marker_output(output_dir):
-                print("  Error: No content JSON found", file=sys.stderr)
-                return False
-
-        book_id = output_dir.name
-        content_file = output_dir / f"{book_id}.json"
-
-        # Generate markdown for human reading
-        markdown = _chunks_to_markdown(content_file)
-        (output_dir / f"{book_id}.md").write_text(markdown)
-
-        return True
-
-    except FileNotFoundError:
-        print("marker_single not found. Install with: pip install marker-pdf", file=sys.stderr)
+    if not extract_pdf_via_spark(source, output_dir):
         return False
+
+    book_id = output_dir.name
+    content_file = output_dir / f"{book_id}.json"
+
+    markdown = _chunks_to_markdown(content_file)
+    (output_dir / f"{book_id}.md").write_text(markdown)
+    return True
 
 
 def extract_epub(source: Path, output_dir: Path) -> bool:
@@ -446,17 +300,12 @@ def extract_book(
     source_file: Path,
     output_dir: Path,
     needs_conversion: bool = False,
-    use_spark: bool = False,
 ) -> bool:
     """Extract a single book to markdown.
 
-    Args:
-        book: Calibre book metadata dict
-        source_file: Path to the source file
-        output_dir: Base output directory for extracted content
-        needs_conversion: If True, convert Kindle format to EPUB first
-        use_spark: If True, route PDF extraction through the Spark
-            marker HTTP service instead of the local marker_single CLI
+    PDF extraction is delegated to the Spark marker HTTP service. EPUB
+    parsing remains local. Cloud (Modal) extraction is handled in main()
+    as a separate batch path and never reaches this function.
     """
     book_id = book["id"]
     book_output = output_dir / str(book_id)
@@ -474,7 +323,7 @@ def extract_book(
         suffix = ".epub"
 
     if suffix == ".pdf":
-        return extract_pdf(source_file, book_output, use_spark=use_spark)
+        return extract_pdf(source_file, book_output)
     elif suffix == ".epub":
         return extract_epub(source_file, book_output)
     else:
@@ -532,14 +381,16 @@ def parse_args():
             i += 1
         elif arg in ("--help", "-h"):
             print(__doc__ or "Extract content from Calibre library to markdown.")
-            print("\nUsage: librarian-extract [OPTIONS]")
+            print("\nUsage: librarian-extract (--spark | --cloud) [OPTIONS]")
+            print("\nA backend is required — there is no local fallback.")
+            print("\nBackends:")
+            print("  --spark         Use the Spark marker HTTP service (LAN GPU)")
+            print("                  Set LIBRARIAN_SPARK_URL to override default host")
+            print("  --cloud         Use Modal cloud GPUs (parallel A100s)")
             print("\nOptions:")
             print("  --dry-run       Show what would be extracted without doing it")
             print("  --force         Re-extract even if already extracted")
-            print("  --cloud         Use Modal cloud GPUs (parallel A100s)")
-            print("  --spark         Use the Spark marker HTTP service (LAN GPU)")
-            print("                  Set LIBRARIAN_SPARK_URL to override default host")
-            print("  --parallel N    Max concurrent cloud extractions (default: unlimited)")
+            print("  --parallel N    Max concurrent cloud extractions (--cloud only)")
             print("  --book-id N     Extract specific book ID (can repeat)")
             print("  --help, -h      Show this help")
             sys.exit(0)
@@ -547,6 +398,14 @@ def parse_args():
 
     if args["cloud"] and args["spark"]:
         print("Error: --cloud and --spark are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
+
+    # A backend must be chosen explicitly. The local path is gone.
+    if not args["dry_run"] and not (args["cloud"] or args["spark"]):
+        print(
+            "Error: must specify a backend: --spark (LAN GPU) or --cloud (Modal)",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     return args
@@ -629,7 +488,7 @@ def main():
 
         print(f"[{book_id}] {title}: Extracting...", flush=True)
 
-        if extract_book(book, source_file, output_path, needs_conversion, use_spark=args["spark"]):
+        if extract_book(book, source_file, output_path, needs_conversion):
             source_hash = compute_file_hash(source_file)
             update_calibre_extraction_state(library_path, book_id, source_hash)
             print(f"[{book_id}] {title}: Done", flush=True)

@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-import requests
+import httpx
 
 
 DEFAULT_SPARK_URL = "http://spark-f80b.local:8001"
@@ -53,20 +53,19 @@ def extract_pdf_via_spark(
 
     try:
         with open(source, "rb") as fh:
-            response = requests.post(
+            response = httpx.post(
                 url,
                 files={"file": (source.name, fh, "application/pdf")},
                 data={"output_format": "chunks"},
                 timeout=timeout,
             )
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         print(f"  Spark request failed: {e}", file=sys.stderr)
         return False
 
-    if not response.ok:
+    if response.is_error:
         print(
-            f"  Spark returned HTTP {response.status_code}: "
-            f"{response.text[:300]}",
+            f"  Spark returned HTTP {response.status_code}: {response.text[:300]}",
             file=sys.stderr,
         )
         return False
