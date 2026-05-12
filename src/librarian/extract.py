@@ -322,23 +322,31 @@ def _collect_marker_output(output_dir: Path) -> bool:
     return True
 
 
-def extract_pdf(source: Path, output_dir: Path) -> bool:
+def extract_pdf(source: Path, output_dir: Path, use_spark: bool = False) -> bool:
     """Extract PDF using marker chunks format.
 
     Produces:
     - {book_id}.json: Content blocks
     - {book_id}_meta.json: Document metadata
     - {book_id}.md: Markdown for human reading
+
+    When use_spark=True, dispatches to the Spark marker HTTP service
+    instead of running marker_single locally on this host.
     """
     try:
-        print("  Extracting with marker (chunks format)...", flush=True)
-        if not _run_marker(source, output_dir, "chunks"):
-            print("marker_single failed", file=sys.stderr)
-            return False
+        if use_spark:
+            from librarian.spark_extract import extract_pdf_via_spark
+            if not extract_pdf_via_spark(source, output_dir):
+                return False
+        else:
+            print("  Extracting with marker (chunks format)...", flush=True)
+            if not _run_marker(source, output_dir, "chunks"):
+                print("marker_single failed", file=sys.stderr)
+                return False
 
-        if not _collect_marker_output(output_dir):
-            print("  Error: No content JSON found", file=sys.stderr)
-            return False
+            if not _collect_marker_output(output_dir):
+                print("  Error: No content JSON found", file=sys.stderr)
+                return False
 
         book_id = output_dir.name
         content_file = output_dir / f"{book_id}.json"
@@ -433,7 +441,13 @@ def extract_epub(source: Path, output_dir: Path) -> bool:
         return False
 
 
-def extract_book(book: dict, source_file: Path, output_dir: Path, needs_conversion: bool = False) -> bool:
+def extract_book(
+    book: dict,
+    source_file: Path,
+    output_dir: Path,
+    needs_conversion: bool = False,
+    use_spark: bool = False,
+) -> bool:
     """Extract a single book to markdown.
 
     Args:
@@ -441,6 +455,8 @@ def extract_book(book: dict, source_file: Path, output_dir: Path, needs_conversi
         source_file: Path to the source file
         output_dir: Base output directory for extracted content
         needs_conversion: If True, convert Kindle format to EPUB first
+        use_spark: If True, route PDF extraction through the Spark
+            marker HTTP service instead of the local marker_single CLI
     """
     book_id = book["id"]
     book_output = output_dir / str(book_id)
@@ -458,7 +474,7 @@ def extract_book(book: dict, source_file: Path, output_dir: Path, needs_conversi
         suffix = ".epub"
 
     if suffix == ".pdf":
-        return extract_pdf(source_file, book_output)
+        return extract_pdf(source_file, book_output, use_spark=use_spark)
     elif suffix == ".epub":
         return extract_epub(source_file, book_output)
     else:
@@ -492,6 +508,7 @@ def parse_args():
         "dry_run": False,
         "force": False,
         "cloud": False,
+        "spark": False,
         "parallel": 0,  # 0 = unlimited (only applies to --cloud)
         "book_ids": [],
     }
@@ -505,6 +522,8 @@ def parse_args():
             args["force"] = True
         elif arg == "--cloud":
             args["cloud"] = True
+        elif arg == "--spark":
+            args["spark"] = True
         elif arg in ("--parallel", "-p") and i + 1 < len(sys.argv):
             args["parallel"] = int(sys.argv[i + 1])
             i += 1
@@ -518,11 +537,17 @@ def parse_args():
             print("  --dry-run       Show what would be extracted without doing it")
             print("  --force         Re-extract even if already extracted")
             print("  --cloud         Use Modal cloud GPUs (parallel A100s)")
+            print("  --spark         Use the Spark marker HTTP service (LAN GPU)")
+            print("                  Set LIBRARIAN_SPARK_URL to override default host")
             print("  --parallel N    Max concurrent cloud extractions (default: unlimited)")
             print("  --book-id N     Extract specific book ID (can repeat)")
             print("  --help, -h      Show this help")
             sys.exit(0)
         i += 1
+
+    if args["cloud"] and args["spark"]:
+        print("Error: --cloud and --spark are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
 
     return args
 
@@ -604,7 +629,7 @@ def main():
 
         print(f"[{book_id}] {title}: Extracting...", flush=True)
 
-        if extract_book(book, source_file, output_path, needs_conversion):
+        if extract_book(book, source_file, output_path, needs_conversion, use_spark=args["spark"]):
             source_hash = compute_file_hash(source_file)
             update_calibre_extraction_state(library_path, book_id, source_hash)
             print(f"[{book_id}] {title}: Done", flush=True)
