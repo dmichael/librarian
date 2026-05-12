@@ -1,0 +1,17 @@
+# Reference compose file for ad-hoc smoke testing on the Spark.
+# The production deploy is managed by the spark_marker_service Ansible
+# role in the infra repo, which templates its own compose file at
+# /srv/marker/compose/compose.marker.yml. Keep these two in sync.
+services:
+  marker:
+    image: ${MARKER_IMAGE:-agents.local:5000/marker-service:latest}
+    container_name: marker-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    gpus: all
+    volumes:
+      - marker-cache:/root/.cache
+
+volumes:
+  marker-cache:

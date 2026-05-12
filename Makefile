@@ -10,7 +10,7 @@
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality
+.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality build-marker push-marker
 
 # Default: run full pipeline
 all: intake extract index
@@ -36,6 +36,7 @@ help:
 	@echo "  make db-migrate-safe      Snapshot + apply Alembic migration safely"
 	@echo ""
 	@echo "Cloud extraction requires: pip install -e '.[cloud]' && modal setup"
+	@echo "Docker API override: DOCKER_API_VERSION=1.45 (set higher/lower per host if needed)"
 
 # Show pipeline status
 status:
@@ -80,13 +81,18 @@ DEPLOY_HOST ?= agents.local
 DEPLOY_PATH ?= /Users/dmichael/projects/librarian
 IMAGE_REF := $(REGISTRY)/$(IMAGE):$(TAG)
 REMOTE_SHELL ?= /bin/zsh -lc
+DOCKER ?= docker
+# Work around intermittent client/daemon API negotiation issues seen during push.
+# Override per host if needed: `make push DOCKER_API_VERSION=1.51`
+DOCKER_API_VERSION ?= 1.45
+DOCKER_API_ENV := DOCKER_API_VERSION=$(DOCKER_API_VERSION)
 
 build:
-	docker build -t $(IMAGE):$(TAG) .
-	docker tag $(IMAGE):$(TAG) $(IMAGE_REF)
+	$(DOCKER_API_ENV) $(DOCKER) build -t $(IMAGE):$(TAG) .
+	$(DOCKER_API_ENV) $(DOCKER) tag $(IMAGE):$(TAG) $(IMAGE_REF)
 
 run:
-	docker compose up
+	$(DOCKER_API_ENV) $(DOCKER) compose up
 
 test-baseline:
 	@PYTHONPATH=src $(PYTHON) -m unittest discover -s tests_baseline -p "test_*.py" -v
@@ -103,14 +109,14 @@ db-migrate-safe:
 
 # Push to the deployment registry
 push: build
-	docker push $(IMAGE_REF)
+	$(DOCKER_API_ENV) $(DOCKER) push $(IMAGE_REF)
 
 deploy-preflight:
 	@echo "Preflight: local checks"
 	@command -v docker >/dev/null || (echo "ERROR: docker not found"; exit 1)
 	@command -v ssh >/dev/null || (echo "ERROR: ssh not found"; exit 1)
 	@command -v git >/dev/null || (echo "ERROR: git not found"; exit 1)
-	@docker info >/dev/null 2>&1 || (echo "ERROR: docker daemon not reachable"; exit 1)
+	@$(DOCKER_API_ENV) $(DOCKER) info >/dev/null 2>&1 || (echo "ERROR: docker daemon not reachable"; exit 1)
 	@test -f Dockerfile || (echo "ERROR: Dockerfile missing in repo root"; exit 1)
 	@test -f docker-compose.prod.yml || (echo "ERROR: docker-compose.prod.yml missing in repo root"; exit 1)
 	@echo "Preflight: remote checks on $(DEPLOY_HOST)"
@@ -127,9 +133,31 @@ deploy-preflight:
 release:
 	@test -n "$(V)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
 	@test -n "$(REGISTRY)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
-	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(V)
-	docker push $(REGISTRY)/$(IMAGE):$(V)
+	$(DOCKER_API_ENV) $(DOCKER) tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(V)
+	$(DOCKER_API_ENV) $(DOCKER) push $(REGISTRY)/$(IMAGE):$(V)
 	@echo "Pushed $(REGISTRY)/$(IMAGE):$(V)"
+
+# === marker-service (separate image, deployed to the DGX Spark) ===
+MARKER_IMAGE ?= marker-service
+MARKER_TAG ?= $(shell git describe --always 2>/dev/null || date +%Y%m%d%H%M%S)
+MARKER_IMAGE_REF := $(REGISTRY)/$(MARKER_IMAGE):$(MARKER_TAG)
+MARKER_IMAGE_LATEST := $(REGISTRY)/$(MARKER_IMAGE):latest
+# Spark is arm64. Build from any arm64 host (Apple Silicon works).
+MARKER_PLATFORM ?= linux/arm64
+
+build-marker:
+	$(DOCKER_API_ENV) $(DOCKER) buildx build \
+		--platform $(MARKER_PLATFORM) \
+		-t $(MARKER_IMAGE):$(MARKER_TAG) \
+		-t $(MARKER_IMAGE_REF) \
+		-t $(MARKER_IMAGE_LATEST) \
+		--load \
+		marker-service
+
+push-marker: build-marker
+	$(DOCKER_API_ENV) $(DOCKER) push $(MARKER_IMAGE_REF)
+	$(DOCKER_API_ENV) $(DOCKER) push $(MARKER_IMAGE_LATEST)
+	@echo "Pushed $(MARKER_IMAGE_REF) and $(MARKER_IMAGE_LATEST)"
 
 deploy: deploy-preflight push
 	@echo "Deploying $(IMAGE_REF) to $(DEPLOY_HOST)..."
