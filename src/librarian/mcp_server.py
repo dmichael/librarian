@@ -39,11 +39,6 @@ mcp = FastMCP("librarian", host="0.0.0.0", port=8811)
 # Background task helpers
 # ---------------------------------------------------------------------------
 
-# Modal app.run() only allows one active context at a time.
-# Serialize all Modal calls so concurrent extract_book requests queue up.
-_modal_lock = threading.Lock()
-
-
 def _update_book_status(book_id: int, status: str, message: str = None, **kwargs):
     """Update book status from a background thread (uses its own session)."""
     config = _get_config()
@@ -352,48 +347,67 @@ def index_book(book_id: int) -> dict:
 
 
 def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
-    """Background worker for book extraction."""
-    import time
+    """Background worker for book extraction.
 
-    from librarian.cloud_extract import app, extract_pdf_remote
-    from librarian.config import expand_path
+    Routing:
+      - PDF  → Spark marker service over HTTP (librarian.spark_extract)
+      - EPUB → local ebooklib-based extractor (librarian.epub_extract)
+
+    Modal cloud extraction lives in librarian.cloud_extract and is no
+    longer the default; it stays available for ad-hoc CLI use.
+    """
+    import time
 
     source = Path(source_path)
     book_output = Path(output_dir)
+    ext = source.suffix.lower()
 
     try:
         file_size_mb = source.stat().st_size / (1024 * 1024)
 
-        # Serialize Modal calls — only one app.run() context allowed at a time
-        if _modal_lock.locked():
-            _update_book_status(book_id, "extracting", "Queued — waiting for another extraction to finish...")
-        _modal_lock.acquire()
-        try:
-            _update_book_status(book_id, "extracting", f"Uploading {source.name} ({file_size_mb:.1f} MB) to Modal...")
+        if ext == ".pdf":
+            from librarian.spark_extract import extract_pdf_via_spark, get_spark_url
 
-            file_bytes = source.read_bytes()
-            _update_book_status(book_id, "extracting", "Running marker on cloud GPU...")
-
-            t0 = time.monotonic()
-            with app.run():
-                result = extract_pdf_remote.remote(file_bytes, book_id, source.name)
-            extraction_duration = time.monotonic() - t0
-        finally:
-            _modal_lock.release()
-
-        if not result["success"]:
             _update_book_status(
-                book_id, "failed", result["error"],
-                extraction_duration_s=extraction_duration,
+                book_id, "extracting",
+                f"POSTing {source.name} ({file_size_mb:.1f} MB) to Spark marker ({get_spark_url()})...",
+            )
+            t0 = time.monotonic()
+            ok = extract_pdf_via_spark(source, book_output)
+            extraction_duration = time.monotonic() - t0
+
+            if not ok:
+                _update_book_status(
+                    book_id, "failed",
+                    "Spark extraction failed (see librarian + marker container logs)",
+                    extraction_duration_s=extraction_duration,
+                )
+                return
+
+        elif ext == ".epub":
+            from librarian.epub_extract import extract_epub
+
+            _update_book_status(
+                book_id, "extracting",
+                f"Extracting {source.name} ({file_size_mb:.1f} MB) locally via ebooklib...",
+            )
+            t0 = time.monotonic()
+            result = extract_epub(source, book_id, book_output)
+            extraction_duration = time.monotonic() - t0
+
+            if not result["success"]:
+                _update_book_status(
+                    book_id, "failed", result["error"] or "EPUB extraction failed",
+                    extraction_duration_s=extraction_duration,
+                )
+                return
+
+        else:
+            _update_book_status(
+                book_id, "failed",
+                f"Unsupported extension {ext} (expected .pdf or .epub)",
             )
             return
-
-        _update_book_status(book_id, "extracting", "Writing output files...")
-
-        (book_output / f"{book_id}.json").write_text(result["chunks_json"])
-        if result["meta_json"]:
-            (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
-        (book_output / f"{book_id}.md").write_text(result["markdown"])
 
         _update_book_status(
             book_id, "extracted",
@@ -408,10 +422,11 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
 
 @mcp.tool()
 def extract_book(book_id: int, force: bool = False) -> dict:
-    """Extract a book (PDF or EPUB) to markdown using Modal cloud GPUs.
+    """Extract a book to markdown.
 
-    Launches extraction in the background and returns immediately.
-    Use book_status(book_id) to track progress.
+    PDFs are extracted via the Spark marker service over HTTP; EPUBs are
+    extracted locally via ebooklib. Launches in the background and returns
+    immediately. Use book_status(book_id) to track progress.
 
     Args:
         book_id: ID of the book to extract
@@ -441,11 +456,6 @@ def extract_book(book_id: int, force: bool = False) -> dict:
         supported = {".pdf", ".epub"}
         if source.suffix.lower() not in supported:
             return {"success": False, "error": f"Unsupported format {source.suffix}, need PDF or EPUB"}
-
-        try:
-            import modal  # noqa: F401
-        except ImportError:
-            return {"success": False, "error": "Modal not installed. Add modal to dependencies."}
 
         from librarian.config import expand_path
 

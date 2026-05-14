@@ -98,11 +98,18 @@ def extract_pdf_via_spark(
     # Write content + metadata to the predictable paths the rest of the
     # pipeline expects (matching what _collect_marker_output produces on
     # the local path).
-    (output_dir / f"{book_id}.json").write_text(
-        json.dumps(chunks_data, indent=2)
-    )
+    chunks_path = output_dir / f"{book_id}.json"
+    chunks_path.write_text(json.dumps(chunks_data, indent=2))
     (output_dir / f"{book_id}_meta.json").write_text(
         json.dumps(payload.get("metadata", {}), indent=2)
     )
+
+    # Also write the human-readable markdown rendering, matching what the
+    # local + cloud paths produce. Imported here (not module-top) to keep
+    # spark_extract self-contained for callers that only want the chunks
+    # write. The leading underscore on _chunks_to_markdown is intentional
+    # private-within-package — we're a sibling, not an external user.
+    from librarian.extract import _chunks_to_markdown
+    (output_dir / f"{book_id}.md").write_text(_chunks_to_markdown(chunks_path))
 
     return True
