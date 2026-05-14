@@ -24,6 +24,7 @@ services:
     # agents.local entry once postgres lives on the same host as librarian.
     extra_hosts:
       - "agents.local:192.168.1.162"
+      - "spark-f80b.local:192.168.1.138"
     volumes:
       # Host path is set by `make deploy` (defaults to /srv/librarian/data
       # on Linux deploy hosts). Falls back to ~/data/librarian if invoked
