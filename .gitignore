@@ -29,7 +29,7 @@ tools/plugins/
 .vscode/
 *.swp
 .env
-.env.librarian
+.env.production
 
 # Local DB maintenance snapshots (created by scripts/db_safe_migrate.py)
 .db_backups/

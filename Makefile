@@ -10,7 +10,7 @@
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: all status intake extract extract-cloud index clean help build run push deploy deploy-preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality build-marker push-marker
+.PHONY: all status intake extract extract-cloud index clean help build run deploy preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality
 
 # Default: run full pipeline
 all: intake extract index
@@ -25,11 +25,11 @@ help:
 	@echo "  make extract      Extract books locally (slow, ~10h/book)"
 	@echo "  make extract-cloud Extract on Modal A100s (fast, parallel)"
 	@echo "  make index        Index extracted content to vector store"
-	@echo "  make build        Build Docker image"
-	@echo "  make run          Run with docker compose"
-	@echo "  make push         Build + push image to registry ($(REGISTRY))"
-	@echo "  make deploy-preflight  Check local/remote deploy prerequisites"
-	@echo "  make deploy       Build + push + remote compose up on $(DEPLOY_HOST)"
+	@echo "  git push ms01 main  Publish source to bare repo on $(BUILD_SSH)"
+	@echo "  make build         Build amd64 image on $(BUILD_SSH) from ms01/main, push to $(REGISTRY)"
+	@echo "  make deploy        Pull image on $(DEPLOY_CONTEXT) + compose up -d"
+	@echo "  make preflight     Bootstrap git remote / build workspace / docker context"
+	@echo "  make run           Run locally with docker compose (dev)"
 	@echo "  make test-baseline Run local characterization tests (unittest)"
 	@echo "  make test-retrieval-quality Run focused retrieval quality smoke tests"
 	@echo "  make db-migrate-snapshot  Create safe DB snapshot (no migration)"
@@ -73,23 +73,44 @@ clean-extracted:
 clean-extracted-confirm:
 	rm -rf ~/data/librarian/converted/*
 
-# === Container ===
+# === Container / deploy ===
+#
+# Three independent operations, same shape as marker-service:
+#   git push ms01 main      — publish source to bare repo on ms-01
+#   make build              — ms-01 builds linux/amd64 image, pushes to ms-01.local:5000
+#   make deploy             — ms-01 pulls image, compose up -d
+#
+# build host == deploy host here (both ms-01), so the registry roundtrip
+# is local; pull is fast.
+
 IMAGE ?= librarian
-TAG ?= $(shell git describe --always --dirty 2>/dev/null || date +%Y%m%d%H%M%S)
-REGISTRY ?= agents.local:5000
-DEPLOY_HOST ?= agents.local
-DEPLOY_PATH ?= /Users/dmichael/projects/librarian
+TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)
+REGISTRY ?= ms-01.local:5000
 IMAGE_REF := $(REGISTRY)/$(IMAGE):$(TAG)
-REMOTE_SHELL ?= /bin/zsh -lc
+IMAGE_LATEST := $(REGISTRY)/$(IMAGE):latest
+PLATFORM ?= linux/amd64
+
 DOCKER ?= docker
-# Work around intermittent client/daemon API negotiation issues seen during push.
-# Override per host if needed: `make push DOCKER_API_VERSION=1.51`
 DOCKER_API_VERSION ?= 1.45
 DOCKER_API_ENV := DOCKER_API_VERSION=$(DOCKER_API_VERSION)
 
-build:
-	$(DOCKER_API_ENV) $(DOCKER) build -t $(IMAGE):$(TAG) .
-	$(DOCKER_API_ENV) $(DOCKER) tag $(IMAGE):$(TAG) $(IMAGE_REF)
+# Build host: where the bare git repo lives and the docker build runs.
+BUILD_SSH    ?= dmichael@ms-01.local
+GIT_REMOTE   ?= ms01
+GIT_BARE     ?= /srv/git/librarian.git
+BUILD_WORK   ?= /srv/librarian/build
+GIT_REMOTE_URL ?= $(BUILD_SSH):$(GIT_BARE)
+
+# Deploy host: pulls the image from the registry and runs the container.
+# For librarian this is the same host as the build, but kept as a distinct
+# var so the role split stays explicit (and can change later).
+DEPLOY_CONTEXT ?= ms01
+DEPLOY_SSH     ?= dmichael@ms-01.local
+
+# Bind-mount target on the deploy host. /srv/<service>/data follows the
+# Spark convention; ansible's docker_host role chowns /srv to dmichael so
+# the build workspace can mkdir freely.
+DATA_DIR ?= /srv/librarian/data
 
 run:
 	$(DOCKER_API_ENV) $(DOCKER) compose up
@@ -107,58 +128,79 @@ db-migrate-snapshot:
 db-migrate-safe:
 	@$(PYTHON) scripts/db_safe_migrate.py --apply
 
-# Push to the deployment registry
-push: build
-	$(DOCKER_API_ENV) $(DOCKER) push $(IMAGE_REF)
-
-deploy-preflight:
-	@echo "Preflight: local checks"
+preflight:
+	@echo "Preflight: local"
 	@command -v docker >/dev/null || (echo "ERROR: docker not found"; exit 1)
-	@command -v ssh >/dev/null || (echo "ERROR: ssh not found"; exit 1)
 	@command -v git >/dev/null || (echo "ERROR: git not found"; exit 1)
-	@$(DOCKER_API_ENV) $(DOCKER) info >/dev/null 2>&1 || (echo "ERROR: docker daemon not reachable"; exit 1)
-	@test -f Dockerfile || (echo "ERROR: Dockerfile missing in repo root"; exit 1)
-	@test -f docker-compose.prod.yml || (echo "ERROR: docker-compose.prod.yml missing in repo root"; exit 1)
-	@echo "Preflight: remote checks on $(DEPLOY_HOST)"
-	@ssh -o BatchMode=yes -o ConnectTimeout=10 $(DEPLOY_HOST) "$(REMOTE_SHELL) 'set -e; \
-		command -v docker >/dev/null; \
-		docker info >/dev/null 2>&1; \
-		docker compose version >/dev/null 2>&1; \
-		test -d $(DEPLOY_PATH); \
-		test -f $(DEPLOY_PATH)/docker-compose.prod.yml; \
-		test -f $(DEPLOY_PATH)/.env.librarian'"
-	@echo "Preflight passed."
+	@test -f Dockerfile || (echo "ERROR: Dockerfile missing"; exit 1)
+	@test -f docker-compose.prod.yml || (echo "ERROR: docker-compose.prod.yml missing"; exit 1)
+	@test -f .env.production || (echo "ERROR: .env.production missing — create one (gitignored) with deploy env vars"; exit 1)
+	@git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+		|| (echo "ERROR: not inside a git repo"; exit 1)
+	@echo "Preflight: bare git repo at $(BUILD_SSH):$(GIT_BARE)"
+	@ssh -o StrictHostKeyChecking=accept-new $(BUILD_SSH) "test -d $(GIT_BARE) || ( \
+		mkdir -p $$(dirname $(GIT_BARE)) && \
+		git init --bare -q $(GIT_BARE) \
+	)"
+	@echo "Preflight: local git remote '$(GIT_REMOTE)'"
+	@git remote get-url $(GIT_REMOTE) >/dev/null 2>&1 \
+		|| git remote add $(GIT_REMOTE) $(GIT_REMOTE_URL)
+	@echo "Preflight: docker context '$(DEPLOY_CONTEXT)'"
+	@$(DOCKER) context inspect $(DEPLOY_CONTEXT) >/dev/null 2>&1 \
+		|| $(DOCKER) context create $(DEPLOY_CONTEXT) --docker host=ssh://$(DEPLOY_SSH) >/dev/null
+	@$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) info >/dev/null 2>&1 \
+		|| (echo "ERROR: cannot reach remote docker via context '$(DEPLOY_CONTEXT)'"; exit 1)
+	@echo "Preflight: data dir on $(DEPLOY_SSH):$(DATA_DIR)"
+	@ssh -o StrictHostKeyChecking=accept-new $(DEPLOY_SSH) "mkdir -p $(DATA_DIR)"
 
-# Release a versioned tag (e.g. make release V=0.1.0 REGISTRY=myregistry:5000)
+build: preflight
+	@# Build operates on what's been pushed to $(GIT_REMOTE)/main, not on
+	@# the local working tree. If you forgot to push, error out with a hint
+	@# instead of silently building a stale image.
+	@git fetch -q $(GIT_REMOTE) main 2>/dev/null || true
+	@local_sha=$$(git rev-parse HEAD); \
+	 remote_sha=$$(git rev-parse $(GIT_REMOTE)/main 2>/dev/null || echo ""); \
+	 if [ -z "$$remote_sha" ]; then \
+	   echo "ERROR: $(GIT_REMOTE)/main not found. Push first: git push $(GIT_REMOTE) main"; \
+	   exit 1; \
+	 fi; \
+	 if [ "$$local_sha" != "$$remote_sha" ]; then \
+	   echo "ERROR: local HEAD ($$local_sha) differs from $(GIT_REMOTE)/main ($$remote_sha)."; \
+	   echo "       Push first: git push $(GIT_REMOTE) main"; \
+	   exit 1; \
+	 fi
+	@echo "Building on $(BUILD_SSH) (native amd64) and pushing image to $(REGISTRY)..."
+	ssh -o StrictHostKeyChecking=accept-new $(BUILD_SSH) "set -e; \
+		if [ ! -d $(BUILD_WORK)/.git ]; then \
+			mkdir -p $$(dirname $(BUILD_WORK)) && \
+			git clone -q $(GIT_BARE) $(BUILD_WORK); \
+		fi; \
+		cd $(BUILD_WORK) && \
+		git fetch -q origin main && \
+		git reset --hard -q origin/main && \
+		docker buildx build \
+			--platform $(PLATFORM) \
+			-t $(IMAGE_REF) \
+			-t $(IMAGE_LATEST) \
+			--push ."
+	@echo "Built and pushed $(IMAGE_REF) (also tagged :latest)."
+
+# Release a versioned tag (e.g. make release V=0.1.0)
 release:
-	@test -n "$(V)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
-	@test -n "$(REGISTRY)" || (echo "Usage: make release V=0.1.0 REGISTRY=myregistry:5000" && exit 1)
-	$(DOCKER_API_ENV) $(DOCKER) tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(V)
-	$(DOCKER_API_ENV) $(DOCKER) push $(REGISTRY)/$(IMAGE):$(V)
+	@test -n "$(V)" || (echo "Usage: make release V=0.1.0" && exit 1)
+	$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) pull $(IMAGE_LATEST)
+	$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) tag $(IMAGE_LATEST) $(REGISTRY)/$(IMAGE):$(V)
+	$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) push $(REGISTRY)/$(IMAGE):$(V)
 	@echo "Pushed $(REGISTRY)/$(IMAGE):$(V)"
 
-# === marker-service (separate image, deployed to the DGX Spark) ===
-MARKER_IMAGE ?= marker-service
-MARKER_TAG ?= $(shell git describe --always 2>/dev/null || date +%Y%m%d%H%M%S)
-MARKER_IMAGE_REF := $(REGISTRY)/$(MARKER_IMAGE):$(MARKER_TAG)
-MARKER_IMAGE_LATEST := $(REGISTRY)/$(MARKER_IMAGE):latest
-# Spark is arm64. Build from any arm64 host (Apple Silicon works).
-MARKER_PLATFORM ?= linux/arm64
-
-build-marker:
-	$(DOCKER_API_ENV) $(DOCKER) buildx build \
-		--platform $(MARKER_PLATFORM) \
-		-t $(MARKER_IMAGE):$(MARKER_TAG) \
-		-t $(MARKER_IMAGE_REF) \
-		-t $(MARKER_IMAGE_LATEST) \
-		--load \
-		marker-service
-
-push-marker: build-marker
-	$(DOCKER_API_ENV) $(DOCKER) push $(MARKER_IMAGE_REF)
-	$(DOCKER_API_ENV) $(DOCKER) push $(MARKER_IMAGE_LATEST)
-	@echo "Pushed $(MARKER_IMAGE_REF) and $(MARKER_IMAGE_LATEST)"
-
-deploy: deploy-preflight push
-	@echo "Deploying $(IMAGE_REF) to $(DEPLOY_HOST)..."
-	@ssh $(DEPLOY_HOST) "$(REMOTE_SHELL) 'set -e; cd $(DEPLOY_PATH); LIBRARIAN_IMAGE=$(IMAGE_REF) docker compose -f docker-compose.prod.yml up -d --remove-orphans; docker compose -f docker-compose.prod.yml ps'"
+deploy: preflight
+	@echo "Pulling latest librarian image on $(DEPLOY_CONTEXT)..."
+	LIBRARIAN_DATA_DIR=$(DATA_DIR) $(DOCKER_API_ENV) \
+		$(DOCKER) --context $(DEPLOY_CONTEXT) compose \
+			-f docker-compose.prod.yml pull
+	@echo "Running compose up -d..."
+	LIBRARIAN_DATA_DIR=$(DATA_DIR) $(DOCKER_API_ENV) \
+		$(DOCKER) --context $(DEPLOY_CONTEXT) compose \
+			-f docker-compose.prod.yml up -d --remove-orphans
+	$(DOCKER) --context $(DEPLOY_CONTEXT) compose \
+		-f docker-compose.prod.yml ps

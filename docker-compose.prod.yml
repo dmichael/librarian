@@ -1,18 +1,27 @@
-# Production compose — pulls from a registry.
+# Production compose — pulls from a registry, runs on a remote docker
+# daemon via a docker context. Nothing here lives on the deploy host:
+# the compose file and .env.production are read locally by `docker
+# compose`, resolved env vars are shipped to the remote daemon as part
+# of the container spec, and only the bind-mounted data dir is host
+# state.
 #
 # Usage:
 #   1. Build/push/deploy in one step: make deploy
-#   2. Ensure .env.librarian exists on target host with DB/Modal settings
-#   3. Optional manual run:
-#      LIBRARIAN_IMAGE=agents.local:5000/librarian:<tag> \
-#      docker compose -f docker-compose.prod.yml up -d
+#   2. .env.production lives next to this file (gitignored), holds DB/Modal/etc.
+#   3. Optional manual run against the remote daemon:
+#      LIBRARIAN_IMAGE=ms-01.local:5000/librarian:<tag> \
+#      docker --context ms01 compose -f docker-compose.prod.yml up -d
 
 services:
   librarian:
-    image: ${LIBRARIAN_IMAGE:-agents.local:5000/librarian:latest}
+    image: ${LIBRARIAN_IMAGE:-ms-01.local:5000/librarian:latest}
     ports:
       - "8811:8811"
-    env_file: .env.librarian
+    env_file: .env.production
     volumes:
-      - ${HOME}/data/librarian:/data/librarian
+      # Host path is set by `make deploy` (defaults to /srv/librarian/data
+      # on Linux deploy hosts). Falls back to ~/data/librarian if invoked
+      # manually without LIBRARIAN_DATA_DIR set, matching the old layout
+      # for local dev/test runs.
+      - ${LIBRARIAN_DATA_DIR:-${HOME}/data/librarian}:/data/librarian
     restart: unless-stopped
