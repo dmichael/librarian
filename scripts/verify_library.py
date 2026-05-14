@@ -4,10 +4,10 @@ Runs the same checks as verify_book but in bulk via direct DB queries,
 then prints a summary report grouped by status.
 
 Usage:
-    ssh agents.local "zsh -l -c 'docker exec librarian-librarian-1 python3 /app/scripts/verify_library.py'"
+    ssh ms-01 "docker exec librarian-librarian-1 python3 /app/scripts/verify_library.py"
 
 Or locally if you have DB access:
-    LIBRARIAN_DB_URL=postgresql://dmichael@agents.local:5432/librarian \
+    LIBRARIAN_DB_URL=postgresql://dmichael@ms-01.local:5432/librarian \
         .venv/bin/python scripts/verify_library.py
 """
 

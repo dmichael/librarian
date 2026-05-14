@@ -20,10 +20,12 @@ services:
     env_file: .env.production
     # mDNS (.local) names are unresolvable from inside a container — the
     # container's DNS chain (docker embedded resolver → router DNS) doesn't
-    # do multicast. Static-map LAN .local hostnames here. Remove the
-    # agents.local entry once postgres lives on the same host as librarian.
+    # do multicast. Static-map LAN .local hostnames here.
+    #
+    # host.docker.internal:host-gateway lets the container reach services
+    # on the deploy host (postgres on ms-01) without the LAN roundtrip.
     extra_hosts:
-      - "agents.local:192.168.1.162"
+      - "host.docker.internal:host-gateway"
       - "spark-f80b.local:192.168.1.138"
     volumes:
       # Host path is set by `make deploy` (defaults to /srv/librarian/data

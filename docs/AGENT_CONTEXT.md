@@ -6,8 +6,8 @@ Behavior and safety rules live in `AGENTS.md`.
 
 ## Deployment reality
 
-- Live deployment host: `agents.local` (Mac mini).
-- Live PostgreSQL for Librarian also runs on `agents.local`.
+- Live deployment host: `ms-01.local` (Linux x86 box).
+- Live PostgreSQL for Librarian also runs on `ms-01.local`.
 - Many agent sessions run on a separate dev machine.
 - Confirm host target before running operational commands.
 

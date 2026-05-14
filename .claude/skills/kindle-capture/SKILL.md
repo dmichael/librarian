@@ -44,7 +44,7 @@ Upload it to the librarian pipeline:
 ```bash
 curl -F file=@~/data/librarian/kindle-captures/{book-slug}/{book-slug}.pdf \
      -F title="$ARGUMENTS" \
-     http://agents.local:8811/upload
+     http://ms-01.local:8811/upload
 ```
 
 Or if running locally, use the MCP tool:

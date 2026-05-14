@@ -26,7 +26,7 @@ embedding:
 
 # Public URL for upload endpoint (override with LIBRARIAN_PUBLIC_URL env var)
 # Set this when the server is accessed over the network, not localhost.
-# public_url: http://agents.local:8811
+# public_url: http://ms-01.local:8811
 
 # Kindle DRM (optional — device serial for DRM decryption)
 # kindle_serial: YOUR_DEVICE_SERIAL

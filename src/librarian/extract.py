@@ -3,7 +3,7 @@
 PDF extraction is delegated to remote marker services — either the
 LAN-resident Spark marker HTTP service (--spark) or Modal A100s
 (--cloud). The local marker_single CLI path was removed: the
-production runtime (agents.local, MCP frontend) has no GPU and
+production runtime (ms-01.local, MCP frontend) has no GPU and
 should not be co-located with ML workloads, and the dev seat is
 on the same LAN as the Spark anyway. One of --spark / --cloud is
 required for any extraction run.

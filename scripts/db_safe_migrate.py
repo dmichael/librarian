@@ -6,8 +6,9 @@ Goals:
 2. Run Alembic upgrade only when explicitly requested (--apply)
 3. Verify pgvector collection row counts are unchanged pre/post migration
 
-Run on the deployment host (agents.local) unless you intentionally target
-another DB URL.
+Run from the dev machine — the script reads LIBRARIAN_DB_URL from .env and
+targets the live DB on ms-01.local. Override with --db-url for non-default
+targets.
 """
 
 from __future__ import annotations

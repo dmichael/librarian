@@ -4,13 +4,13 @@ Safe operational workflow for Librarian DB migrations.
 
 ## Where to run
 
-Run these operations against the live host:
+Run from the dev machine against the live DB:
 
-- Host: `agents.local`
-- Database: `librarian` on `agents.local`
+- Host: `ms-01.local`
+- Database: `librarian` on `ms-01.local`
 
-If you are on a dev machine, run through SSH to `agents.local` or run directly
-on the Mac mini shell.
+The wrapper script reads `LIBRARIAN_DB_URL` from `.env`, so no host or
+credentials need to appear on the command line.
 
 ## Safe migration wrapper
 
@@ -42,12 +42,6 @@ To actually run Alembic:
   - `data_librarian_chapters`
 - Verifies those pgvector counts are unchanged after migration
 - Refuses non-`librarian` DB names unless explicitly overridden
-
-## Example from dev machine
-
-```bash
-ssh agents.local "cd /Users/dmichael/projects/librarian && .venv/bin/python scripts/db_safe_migrate.py --apply"
-```
 
 ## Notes
 

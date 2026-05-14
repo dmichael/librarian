@@ -137,7 +137,7 @@ cat > .env <<EOF
 LIBRARIAN_DB_URL=postgresql://host.docker.internal:5432/librarian
 LIBRARIAN_DATA_ROOT=/data/librarian
 LIBRARIAN_EMBEDDING_DEVICE=cpu
-LIBRARIAN_PUBLIC_URL=http://agents.local:8811
+LIBRARIAN_PUBLIC_URL=http://ms-01.local:8811
 EOF
 
 docker compose up
@@ -149,8 +149,8 @@ at startup. Modal credentials for cloud extraction go in `.env` as
 
 ## Deployment topology
 
-- Live app host: `agents.local` (Mac mini)
-- Live PostgreSQL host for Librarian: `agents.local`
+- Live app host: `ms-01.local` (Mac mini)
+- Live PostgreSQL host for Librarian: `ms-01.local`
 - Dev/agent sessions may run on another machine; verify target host before
   operational commands.
 
@@ -161,8 +161,8 @@ For safe migration workflow, see `docs/DB_MAINTENANCE.md`.
 `make deploy` now performs:
 
 1. Docker build (tag defaults to `git describe --always --dirty`)
-2. Push to `agents.local:5000`
-3. Remote `docker compose -f docker-compose.prod.yml up -d` on `agents.local`
+2. Push to `ms-01.local:5000`
+3. Remote `docker compose -f docker-compose.prod.yml up -d` on `ms-01.local`
 
 Container startup runs `alembic upgrade head` before launching MCP server, so
 migrations are applied at boot (no separate migration step).
@@ -177,17 +177,17 @@ make deploy-preflight
 
 Defaults in `Makefile`:
 
-- `REGISTRY=agents.local:5000`
-- `DEPLOY_HOST=agents.local`
+- `REGISTRY=ms-01.local:5000`
+- `DEPLOY_HOST=ms-01.local`
 - `DEPLOY_PATH=/Users/dmichael/projects/librarian`
 
 Override example:
 
 ```bash
-make deploy REGISTRY=agents.local:5000 DEPLOY_HOST=agents.local DEPLOY_PATH=/Users/dmichael/projects/librarian
+make deploy REGISTRY=ms-01.local:5000 DEPLOY_HOST=ms-01.local DEPLOY_PATH=/Users/dmichael/projects/librarian
 ```
 
-Requirement on `agents.local`: `.env.librarian` must exist and include runtime
+Requirement on `ms-01.local`: `.env.librarian` must exist and include runtime
 settings (`LIBRARIAN_DB_URL`, `LIBRARIAN_DATA_ROOT`, `LIBRARIAN_PUBLIC_URL`,
 `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, etc.).
 

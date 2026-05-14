@@ -1,10 +1,9 @@
 """Extract PDFs via the marker HTTP service running on the DGX Spark.
 
 This module is the local-network equivalent of cloud_extract.py: instead
-of dispatching to Modal A100s, it POSTs each PDF to the Spark's
-marker-service container at agents.local-discoverable
-`http://spark-f80b.local:8001/marker/upload` and writes the response to
-disk in the same layout the rest of the pipeline expects.
+of dispatching to Modal A100s, it POSTs each PDF to the Spark's marker
+HTTP service at `http://spark-f80b.local:8001/marker/upload` and writes
+the response to disk in the same layout the rest of the pipeline expects.
 
 Override the host via the `LIBRARIAN_SPARK_URL` env var if the Spark
 moves or you point this at a different host.

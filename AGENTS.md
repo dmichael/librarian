@@ -17,10 +17,10 @@ registered source artifacts in this pipeline.
 ## Core behavior rules
 
 1. Verify execution target before operations.
-   - Live app + database run on `agents.local` (Mac mini).
+   - Live app + database run on `ms-01.local` (Linux x86 box).
    - Agent sessions may run on a different dev machine.
    - Do not assume local `localhost` is the live Librarian DB/service.
-   - Do not evaluate `agents.local` from normal dev workflow unless the user
+   - Do not evaluate `ms-01.local` from normal dev workflow unless the user
      explicitly requests it (or asks for recovery after a confidence-breaking failure).
 2. Protect indexed data unless explicitly instructed otherwise.
    - pgvector collections are expensive to rebuild.
