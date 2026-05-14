@@ -12,6 +12,14 @@ COPY config/settings.yaml config/settings.yaml
 COPY alembic.ini alembic.ini
 COPY alembic/ alembic/
 
+# Pre-install CPU-only torch before the main resolve. On Linux x86 `pip
+# install torch` defaults to a CUDA wheel that drags in ~5 GB of nvidia-*
+# packages we'd never use — librarian's only torch consumer is
+# sentence-transformers for BGE embeddings, and the deploy host has no
+# GPU. By installing torch+cpu first, the transitive resolution for
+# sentence-transformers sees the dep already satisfied.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+
 RUN pip install --no-cache-dir -e ".[serve]"
 
 # Bake embedding model into image (~400MB, avoids runtime download)
