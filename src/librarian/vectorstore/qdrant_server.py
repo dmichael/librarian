@@ -196,6 +196,30 @@ class QdrantServerStore:
         except Exception:
             return []
 
+    def update_metadata_by_book_id(
+        self, collection_name: str, book_id: int, updates: dict[str, str]
+    ) -> int:
+        """Update payload fields on all points belonging to a book."""
+        if not updates or not self.collection_exists(collection_name):
+            return 0
+        try:
+            flt = Filter(
+                must=[FieldCondition(key="book_id", match=MatchValue(value=book_id))]
+            )
+            matched = self.client.count(
+                collection_name=collection_name, count_filter=flt
+            ).count
+            if matched == 0:
+                return 0
+            self.client.set_payload(
+                collection_name=collection_name,
+                payload=dict(updates),
+                points=FilterSelector(filter=flt),
+            )
+            return matched
+        except Exception:
+            return 0
+
     def requires_lock(self) -> bool:
         """Qdrant server handles concurrency, no external lock needed."""
         return False

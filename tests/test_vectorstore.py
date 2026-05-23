@@ -6,9 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from librarian.vectorstore import get_vector_store, get_collection_names
+from librarian.vectorstore import (
+    get_collection_names,
+    get_vector_store,
+    reset_vector_store,
+)
 from librarian.vectorstore.protocol import LibrarianVectorStore
 from librarian.vectorstore.qdrant_file import QdrantFileStore
+
+
+@pytest.fixture(autouse=True)
+def _reset_vector_store_singleton():
+    """Reset the cached factory singleton between tests."""
+    reset_vector_store()
+    yield
+    reset_vector_store()
 
 
 def _pg_reachable(host="localhost", port=5432, timeout=2) -> bool:

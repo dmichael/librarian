@@ -240,6 +240,14 @@ class LanceDBStore:
         except Exception:
             return []
 
+    def update_metadata_by_book_id(
+        self, collection_name: str, book_id: int, updates: dict[str, str]
+    ) -> int:
+        """Not implemented for LanceDB (dev backend; production uses pgvector)."""
+        raise NotImplementedError(
+            "update_metadata_by_book_id is not implemented for LanceDBStore"
+        )
+
     def requires_lock(self) -> bool:
         """LanceDB handles concurrent reads without external locking."""
         return False

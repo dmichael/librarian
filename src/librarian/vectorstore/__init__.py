@@ -21,10 +21,16 @@ from librarian.config import expand_path
 from librarian.vectorstore.protocol import LibrarianVectorStore
 
 # Re-export protocol for type hints
-__all__ = ["LibrarianVectorStore", "get_vector_store"]
+__all__ = ["LibrarianVectorStore", "get_vector_store", "reset_vector_store"]
 
 
 _vector_store_instance: LibrarianVectorStore | None = None
+
+
+def reset_vector_store() -> None:
+    """Clear the cached singleton. Intended for tests and reconfiguration."""
+    global _vector_store_instance
+    _vector_store_instance = None
 
 
 def get_vector_store(
