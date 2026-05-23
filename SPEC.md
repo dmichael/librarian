@@ -282,48 +282,13 @@ status:
   last_updated: "2025-01-13"
 ```
 
-### 4.3 Subject Taxonomy
+### 4.3 Subjects
 
-Start coarse, refine as agents are built:
-
-```
-subjects/
-├── investing/
-│   ├── value-investing
-│   ├── macro-economics
-│   ├── quantitative
-│   └── behavioral-finance
-├── philosophy/
-│   ├── stoicism
-│   ├── ethics
-│   ├── epistemology
-│   └── eastern
-├── technology/
-│   ├── software-engineering
-│   ├── artificial-intelligence
-│   ├── systems-thinking
-│   └── history-of-tech
-├── psychology/
-│   ├── cognitive-biases
-│   ├── decision-making
-│   ├── motivation
-│   └── behavioral
-├── business/
-│   ├── strategy
-│   ├── management
-│   ├── entrepreneurship
-│   └── case-studies
-├── history/
-│   ├── economic-history
-│   ├── military-history
-│   ├── biography
-│   └── civilizations
-└── science/
-    ├── physics
-    ├── biology
-    ├── complexity
-    └── mathematics
-```
+Subjects are open-vocabulary, slash-separated tags applied per book (e.g.
+`therapy/dbt`, `cs/llm`). There is no closed taxonomy; semantic search over
+embedded content does the heavy lifting for topic discovery, and subjects act
+as hard filters where embeddings can't disambiguate (year, jurisdiction,
+edition). The `library` field is the primary axis for curated sets.
 
 ---
 
@@ -336,7 +301,6 @@ librarian/
 ├── SPEC.md                    # This document
 ├── config/
 │   ├── settings.yaml          # Global configuration
-│   ├── subjects.yaml          # Subject taxonomy
 │   └── agents.yaml            # Agent definitions
 │
 ├── calibre/                   # Calibre library (or symlink)
@@ -491,9 +455,8 @@ BaseWorldview (meta-agent)
 - [ ] Validate output quality
 
 ### Phase 3: Classification System
-- [ ] Define initial subject taxonomy (coarse)
-- [ ] Build LLM-assisted classification tool
-- [ ] Classify initial batch with human review
+- [ ] Build LLM-assisted tagging tool (open-vocabulary)
+- [ ] Tag initial batch with human review
 
 ### Phase 4: First Agent (Buffett Advisor)
 - [ ] Curate reading list (10-20 core texts)
@@ -503,7 +466,6 @@ BaseWorldview (meta-agent)
 
 ### Phase 5: Expand
 - [ ] Add more agents/facets
-- [ ] Refine taxonomy based on usage
 - [ ] Add annotation/notes workflow
 - [ ] Build unified worldview agent
 

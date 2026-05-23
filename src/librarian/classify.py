@@ -5,31 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
-
 from librarian.config import expand_path, load_config
 from librarian.files import find_markdown
-
-
-def load_taxonomy() -> dict:
-    """Load the subject taxonomy."""
-    config_dir = Path(__file__).parent.parent.parent / "config"
-    taxonomy_path = config_dir / "taxonomy.yaml"
-
-    with open(taxonomy_path) as f:
-        return yaml.safe_load(f)
-
-
-def get_taxonomy_prompt(taxonomy: dict) -> str:
-    """Generate taxonomy description for LLM prompt."""
-    lines = ["Available subject categories:"]
-    for parent, info in taxonomy.get("subjects", {}).items():
-        desc = info.get("description", "")
-        children = info.get("children", [])
-        lines.append(f"\n{parent}: {desc}")
-        if children:
-            lines.append(f"  Subtopics: {', '.join(children)}")
-    return "\n".join(lines)
 
 
 def sample_book_content(book_dir: Path, sample_size: int = 5000) -> str:
@@ -99,17 +76,12 @@ def classify_book(
     book_id: int,
     title: str,
     content_sample: str,
-    taxonomy: dict,
     config: dict,
 ) -> list[str]:
     """Use LLM to suggest subjects for a book."""
-    taxonomy_desc = get_taxonomy_prompt(taxonomy)
-
     prompt = f"""Analyze this book and suggest appropriate subject classifications.
 
 Book Title: {title}
-
-{taxonomy_desc}
 
 Content Sample:
 ---
@@ -118,9 +90,8 @@ Content Sample:
 
 Instructions:
 1. Suggest 2-4 subjects that best describe this book
-2. Use format "parent/child" (e.g., "psychology/therapy")
-3. Only use subjects from the taxonomy above
-4. Return ONLY a JSON array of strings, nothing else
+2. Use slash-separated format "parent/child" (e.g., "psychology/therapy", "cs/llm")
+3. Return ONLY a JSON array of strings, nothing else
 
 Example response: ["psychology/therapy", "self-help/skills-training"]
 
@@ -179,7 +150,7 @@ def update_calibre_subjects(library_path: Path, book_id: int, subjects: list[str
     subprocess.run(cmd, capture_output=True)
 
 
-def interactive_approve(title: str, suggestions: list[str], taxonomy: dict) -> list[str]:
+def interactive_approve(title: str, suggestions: list[str]) -> list[str]:
     """Interactive approval of suggested subjects."""
     print(f"\nSuggested subjects for '{title}':")
     for i, subj in enumerate(suggestions, 1):
@@ -258,7 +229,6 @@ def main():
     output_path = expand_path(config["output_path"])
     sample_size = config.get("classification", {}).get("sample_size", 5000)
 
-    taxonomy = load_taxonomy()
     calibre_books = get_calibre_books(library_path)
 
     # Find extracted books
@@ -289,12 +259,12 @@ def main():
             continue
 
         # Get LLM suggestions
-        suggestions = classify_book(book_id, title, content_sample, taxonomy, config)
+        suggestions = classify_book(book_id, title, content_sample, config)
 
         if not suggestions:
             print(f"[{book_id}] No suggestions from LLM")
             if not args["auto"]:
-                suggestions = interactive_approve(title, [], taxonomy)
+                suggestions = interactive_approve(title, [])
             if not suggestions:
                 continue
 
@@ -303,7 +273,7 @@ def main():
             approved = suggestions
             print(f"[{book_id}] Auto-approved: {approved}")
         else:
-            approved = interactive_approve(title, suggestions, taxonomy)
+            approved = interactive_approve(title, suggestions)
 
         if approved:
             update_calibre_subjects(library_path, book_id, approved)

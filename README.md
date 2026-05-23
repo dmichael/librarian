@@ -252,7 +252,6 @@ src/librarian/
 
 config/
   settings.yaml       Default configuration
-  taxonomy.yaml       Subject taxonomy definitions
 ```
 
 ## Development
