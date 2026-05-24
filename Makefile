@@ -96,15 +96,15 @@ DOCKER_API_ENV := DOCKER_API_VERSION=$(DOCKER_API_VERSION)
 
 # Build host: where the bare git repo lives and the docker build runs.
 BUILD_SSH    ?= dmichael@ms-01.local
-GIT_REMOTE   ?= ms01
+GIT_REMOTE   ?= ms-01
 GIT_BARE     ?= /srv/git/librarian.git
 BUILD_WORK   ?= /srv/librarian/build
-GIT_REMOTE_URL ?= $(BUILD_SSH):$(GIT_BARE)
+GIT_REMOTE_URL ?= ssh://$(BUILD_SSH)$(GIT_BARE)
 
 # Deploy host: pulls the image from the registry and runs the container.
 # For librarian this is the same host as the build, but kept as a distinct
 # var so the role split stays explicit (and can change later).
-DEPLOY_CONTEXT ?= ms01
+DEPLOY_CONTEXT ?= ms-01
 DEPLOY_SSH     ?= dmichael@ms-01.local
 
 # Bind-mount target on the deploy host. /srv/<service>/data follows the
