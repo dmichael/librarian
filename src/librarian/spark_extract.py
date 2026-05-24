@@ -123,7 +123,28 @@ def extract_pdf_via_spark(
     if write_html:
         _write_html_artifacts(source, output_dir, timeout)
 
+    _write_qa_artifacts(source, output_dir)
+
     return True
+
+
+def _write_qa_artifacts(source: Path, output_dir: Path) -> None:
+    """Write extraction QA artifacts if local baseline tools are available."""
+    try:
+        from librarian.extraction_qa import write_extraction_qa
+
+        result = write_extraction_qa(source, output_dir)
+    except Exception as e:
+        print(f"  Extraction QA failed: {e}", file=sys.stderr)
+        return
+
+    if result.success:
+        print(
+            f"  Wrote extraction QA report ({result.findings} findings) to {result.review_dir}",
+            flush=True,
+        )
+    else:
+        print(f"  Extraction QA skipped: {result.error}", file=sys.stderr)
 
 
 def _write_html_artifacts(source: Path, output_dir: Path, timeout: int) -> None:

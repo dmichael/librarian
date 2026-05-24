@@ -35,6 +35,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libpq5 wget xz-utils \
         libegl1 libopengl0 libxcb-cursor0 libfreetype6 \
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Calibre (headless — ebook-convert + calibredb for format conversion / DRM)
