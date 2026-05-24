@@ -99,6 +99,16 @@ def test_spark_extraction_writes_marker_artifacts_under_raw_marker(tmp_path: Pat
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF")
     book_dir = tmp_path / "2"
+    book_dir.mkdir()
+    for name in [
+        "2.json",
+        "2.md",
+        "2_meta.json",
+        "2.html",
+        "2_html_meta.json",
+        "_page_1_Figure_3.jpeg",
+    ]:
+        (book_dir / name).write_text("legacy")
 
     class FakeResponse:
         is_error = False
@@ -154,3 +164,7 @@ def test_spark_extraction_writes_marker_artifacts_under_raw_marker(tmp_path: Pat
     assert (raw_marker / "images" / "3.jpeg").read_bytes() == b"image"
     assert not (book_dir / "2.json").exists()
     assert not (book_dir / "2.md").exists()
+    assert not (book_dir / "2_meta.json").exists()
+    assert not (book_dir / "2.html").exists()
+    assert not (book_dir / "2_html_meta.json").exists()
+    assert not (book_dir / "_page_1_Figure_3.jpeg").exists()

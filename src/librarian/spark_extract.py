@@ -12,6 +12,7 @@ moves or you point this at a different host.
 import base64
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -57,6 +58,7 @@ def extract_pdf_via_spark(
         True on successful extraction and write, False on any failure.
     """
     url = f"{get_spark_url()}/marker/upload"
+    _prepare_output_layout(output_dir)
     marker_output_dir = marker_dir(output_dir)
     marker_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,6 +129,34 @@ def extract_pdf_via_spark(
     _write_qa_artifacts(source, output_dir)
 
     return True
+
+
+def _prepare_output_layout(output_dir: Path) -> None:
+    """Prepare the per-book artifact directory for a fresh raw extraction.
+
+    This removes generated artifacts from the old root-level layout and clears
+    the current raw Marker directory so a re-extraction cannot leave stale files
+    behind. Source PDFs live elsewhere and are never touched here.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    book_id = output_dir.name
+
+    legacy_files = [
+        output_dir / f"{book_id}.json",
+        output_dir / f"{book_id}.md",
+        output_dir / f"{book_id}_meta.json",
+        output_dir / f"{book_id}.html",
+        output_dir / f"{book_id}_html_meta.json",
+    ]
+    legacy_files.extend(output_dir.glob("_page_*"))
+
+    for path in legacy_files:
+        if path.is_file():
+            path.unlink()
+
+    raw_marker = marker_dir(output_dir)
+    if raw_marker.exists():
+        shutil.rmtree(raw_marker)
 
 
 def _write_qa_artifacts(source: Path, output_dir: Path) -> None:
