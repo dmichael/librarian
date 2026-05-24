@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -7,10 +9,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
-COPY src/ src/
-COPY config/settings.yaml config/settings.yaml
-COPY alembic.ini alembic.ini
-COPY alembic/ alembic/
+
+RUN python -c "import pathlib, tomllib; p=tomllib.loads(pathlib.Path('pyproject.toml').read_text()); deps=p['project']['dependencies'] + p['project']['optional-dependencies']['serve']; pathlib.Path('/tmp/requirements.txt').write_text('\n'.join(deps) + '\n')"
 
 # Pre-install CPU-only torch before the main resolve. On Linux x86 `pip
 # install torch` defaults to a CUDA wheel that drags in ~5 GB of nvidia-*
@@ -20,7 +20,14 @@ COPY alembic/ alembic/
 # sentence-transformers sees the dep already satisfied.
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 
-RUN pip install --no-cache-dir -e ".[serve]"
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY src/ src/
+COPY config/settings.yaml config/settings.yaml
+COPY alembic.ini alembic.ini
+COPY alembic/ alembic/
+
+RUN pip install --no-cache-dir --no-deps -e ".[serve]"
 
 # Bake embedding model into image (~400MB, avoids runtime download)
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-en-v1.5')"
