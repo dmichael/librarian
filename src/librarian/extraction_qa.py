@@ -18,6 +18,17 @@ from librarian.extractors import ExtractorResult, PdfTextExtractor
 from librarian.files import find_content_json, marker_dir
 
 
+# Some old PDFs use custom symbolic fonts. pdftotext can decode those glyphs as
+# unrelated Unicode codepoints, including CJK punctuation/characters. Keep the
+# observed artifacts named here so the equation-line heuristic is explainable.
+PDFTEXT_MOJIBAKE_EQUALS = "\u82f7"
+PDFTEXT_MOJIBAKE_MATH_MARKERS = set(
+    "=+-/^()[]{}"
+    + PDFTEXT_MOJIBAKE_EQUALS
+    + "\u5173\u517e\u5171\u5172\u1828\u2d31\u2bdd"
+)
+
+
 @dataclass
 class NumberedEquation:
     number: str
@@ -174,7 +185,7 @@ def extract_numbered_equations_from_pdftext(text: str) -> list[NumberedEquation]
 
             number = match.group("number")
             context_lines = []
-            if "=" not in body and "苷" not in body:
+            if "=" not in body and PDFTEXT_MOJIBAKE_EQUALS not in body:
                 for prev_idx in range(max(0, idx - 2), idx):
                     prev = lines[prev_idx].strip()
                     if _looks_like_equation_line(prev):
@@ -216,19 +227,23 @@ def _pdftext_equations_by_number(text: str) -> dict[str, str]:
 def _looks_like_equation_line(line: str) -> bool:
     if not line:
         return False
-    if "=" in line or "苷" in line:
+    if "=" in line or PDFTEXT_MOJIBAKE_EQUALS in line:
         return True
 
     if len(line.split()) > 12:
         return False
 
-    math_markers = set("=+-/^()[]{}苷兾共兲ᠨⴱ⯝")
-    marker_count = sum(1 for char in line if char in math_markers)
+    marker_count = sum(1 for char in line if char in PDFTEXT_MOJIBAKE_MATH_MARKERS)
     if marker_count >= 2:
         return True
 
     compact = re.sub(r"\s+", "", line)
-    return bool(re.search(r"[A-Za-z][A-Za-z0-9]?[=苷]", compact))
+    return bool(
+        re.search(
+            rf"[A-Za-z][A-Za-z0-9]?[={PDFTEXT_MOJIBAKE_EQUALS}]",
+            compact,
+        )
+    )
 
 
 def _is_pdftext_noise_line(line: str) -> bool:
