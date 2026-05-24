@@ -33,3 +33,6 @@ tools/plugins/
 
 # Local DB maintenance snapshots (created by scripts/db_safe_migrate.py)
 .db_backups/
+
+# Generated extraction QA artifacts; tracked audits should be Markdown files.
+qa/audits/book-*/
