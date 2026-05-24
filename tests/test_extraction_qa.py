@@ -3,6 +3,7 @@ from pathlib import Path
 from librarian.extraction_qa import (
     compare_marker_to_pdftext,
     extract_numbered_equations_from_pdftext,
+    write_extraction_qa,
 )
 
 
@@ -52,3 +53,36 @@ def test_compare_marker_to_pdftext_flags_phase_symbol_disagreement(tmp_path: Pat
     assert by_number["9"].status == "ok"
     assert by_number["10"].status == "review"
     assert "phi_j" in by_number["10"].notes[0]
+
+
+def test_extraction_qa_report_explains_pdftext_font_artifacts(tmp_path: Path, monkeypatch):
+    marker_dir = tmp_path / "raw" / "marker"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "document.json").write_text(
+        """
+{
+  "blocks": [
+    {
+      "block_type": "Equation",
+      "html": "<p block-type=\\"Equation\\"><math display=\\"block\\">K = K_o + B\\\\cos[\\\\phi(t) + \\\\phi_i]. \\\\tag{10}</math></p>"
+    }
+  ]
+}
+"""
+    )
+
+    def fake_run(self, source_path, output_dir):
+        pdftext_dir = output_dir / "raw" / "pdftext"
+        pdftext_dir.mkdir(parents=True)
+        path = pdftext_dir / "layout.txt"
+        path.write_text("K 苷 Ko 1 B cos关f共t兲 1 fj 兴 .               (10)")
+        from librarian.extractors import ExtractorResult
+
+        return ExtractorResult(name="pdftext", success=True, output_path=str(path))
+
+    monkeypatch.setattr("librarian.extractors.PdfTextExtractor.run", fake_run)
+
+    write_extraction_qa(tmp_path / "source.pdf", tmp_path)
+
+    report = (tmp_path / "review" / "extraction_qa.md").read_text()
+    assert "custom symbolic fonts can appear as unrelated Unicode glyphs" in report

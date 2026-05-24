@@ -301,6 +301,10 @@ def _write_review_markdown(
             "",
             "## Equation Comparison",
             "",
+            "The `pdftotext` cells are raw embedded-PDF text. On older PDFs,",
+            "custom symbolic fonts can appear as unrelated Unicode glyphs;",
+            "treat them as comparison evidence, not cleaned text.",
+            "",
             "| Eq. | Status | Marker | pdftotext | Notes |",
             "|---|---|---|---|---|",
         ]
