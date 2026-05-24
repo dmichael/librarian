@@ -5,6 +5,7 @@ from librarian.reconcile import (
     apply_reconciliation,
     build_reconciliation_packet,
     call_openai_compatible_chat,
+    reconcile_book,
     resolve_base_url,
 )
 
@@ -43,6 +44,19 @@ def test_build_reconciliation_packet_uses_review_findings(tmp_path: Path):
     assert packet["canonical_raw_markdown"] == "raw/marker/document.md"
     assert len(packet["findings"]) == 1
     assert packet["findings"][0]["number"] == "10"
+    assert packet["findings"][0]["raw_markdown_candidates"] == [
+        "K = K_o + B\\cos[\\phi(t) + \\phi_i]. \\tag{10}"
+    ]
+
+
+def test_book2_fixture_packet_contains_exact_markdown_candidate():
+    fixture = Path("tests/fixtures/reconcile/simple_motor_gestures_book2")
+
+    packet = build_reconciliation_packet(fixture)
+
+    assert packet["findings"][0]["raw_markdown_candidates"] == [
+        r"K = K\_o + B\cos[\phi(t) + \phi\_i]. \tag{10}"
+    ]
 
 
 def test_apply_reconciliation_writes_clean_document_and_corrections(tmp_path: Path):
@@ -103,6 +117,22 @@ def test_resolve_base_url_requires_openai_base_url_convention(monkeypatch):
         raise AssertionError("Expected missing OPENAI_BASE_URL to fail")
 
 
+def test_packet_only_does_not_need_base_url(tmp_path: Path):
+    result = reconcile_book(
+        tmp_path,
+        base_url="",
+        api_key="",
+        model="qwen3:14b",
+        timeout=1,
+        json_mode="object",
+        apply=False,
+        packet_only=True,
+    )
+
+    assert result["packet"] == str(tmp_path / "review" / "reconciliation_packet.json")
+    assert (tmp_path / "review" / "reconciliation_packet.json").exists()
+
+
 def test_openai_compatible_chat_uses_chat_completions_payload(monkeypatch):
     captured = {}
 
@@ -135,3 +165,10 @@ def test_openai_compatible_chat_uses_chat_completions_payload(monkeypatch):
     assert captured["url"] == "http://spark-f80b.local:11434/v1/chat/completions"
     assert captured["json"]["model"] == "qwen3:14b"
     assert captured["json"]["response_format"] == {"type": "json_object"}
+
+
+def test_reconcile_module_keeps_cli_separate():
+    import librarian.reconcile as reconcile
+
+    assert not hasattr(reconcile, "argparse")
+    assert not hasattr(reconcile, "main")

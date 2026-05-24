@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from librarian.files import find_markdown
 
@@ -54,8 +52,9 @@ RECONCILIATION_SCHEMA: dict[str, Any] = {
 }
 
 
-@dataclass
-class AppliedPatch:
+class ReconciliationPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     target_type: str
     target_id: str
     operation: str
@@ -64,6 +63,15 @@ class AppliedPatch:
     confidence: str
     rationale: str
     evidence: list[str]
+
+
+class ReconciliationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patches: list[ReconciliationPatch] = Field(default_factory=list)
+
+
+class AppliedPatch(ReconciliationPatch):
     applied: bool
     reason: str | None = None
 
@@ -74,6 +82,12 @@ def build_reconciliation_packet(book_dir: Path) -> dict[str, Any]:
     findings = [item for item in equation_diffs if item.get("status") != "ok"]
 
     marker_md = find_markdown(book_dir)
+    marker_text = marker_md.read_text(errors="replace") if marker_md else ""
+    for item in findings:
+        number = str(item.get("number", ""))
+        if number:
+            item["raw_markdown_candidates"] = _raw_equation_candidates(marker_text, number)
+
     return {
         "book_dir": str(book_dir),
         "canonical_raw_markdown": "raw/marker/document.md",
@@ -86,7 +100,7 @@ def build_reconciliation_packet(book_dir: Path) -> dict[str, Any]:
             "clean_output": "clean/document.md",
             "patch_record": "clean/corrections.json",
         },
-        "raw_markdown_excerpt": _read_excerpt(marker_md, max_chars=12000) if marker_md else "",
+        "raw_markdown_excerpt": _excerpt_text(marker_text, max_chars=12000),
         "findings": findings,
     }
 
@@ -155,7 +169,7 @@ def call_openai_compatible_chat(
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
-    return _parse_json_object(content)
+    return ReconciliationProposal.model_validate(_parse_json_object(content)).model_dump()
 
 
 def write_reconciliation_proposal(book_dir: Path, proposal: dict[str, Any]) -> Path:
@@ -178,22 +192,25 @@ def apply_reconciliation(book_dir: Path, proposal: dict[str, Any]) -> list[Appli
 
     content = source.read_text()
     applied: list[AppliedPatch] = []
-    for patch in proposal.get("patches", []):
-        item = _patch_from_dict(patch, applied=False)
-        if patch.get("operation") != "replace":
-            item.reason = f"Unsupported operation: {patch.get('operation')}"
-        elif not patch.get("before"):
+    validated = ReconciliationProposal.model_validate(proposal)
+    for patch in validated.patches:
+        item = AppliedPatch(**patch.model_dump(), applied=False)
+        if patch.operation != "replace":
+            item.reason = f"Unsupported operation: {patch.operation}"
+        elif not patch.before:
             item.reason = "Patch has empty before text."
-        elif patch["before"] not in content:
+        elif patch.before not in content:
             item.reason = "Before text not found in raw Markdown."
         else:
-            content = content.replace(patch["before"], patch.get("after", ""), 1)
+            content = content.replace(patch.before, patch.after, 1)
             item.applied = True
         applied.append(item)
 
     document_path.write_text(content)
     corrections_path = clean_dir / "corrections.json"
-    corrections_path.write_text(json.dumps([asdict(item) for item in applied], indent=2) + "\n")
+    corrections_path.write_text(
+        json.dumps([item.model_dump() for item in applied], indent=2) + "\n"
+    )
     return applied
 
 
@@ -229,7 +246,7 @@ def reconcile_book(
         "packet": None,
         "proposal": str(proposal_path),
         "patches": len(proposal.get("patches", [])),
-        "applied": [asdict(item) for item in applied],
+        "applied": [item.model_dump() for item in applied],
     }
 
 
@@ -253,9 +270,26 @@ def _load_json(path: Path, *, default: Any) -> Any:
 
 def _read_excerpt(path: Path, *, max_chars: int) -> str:
     text = path.read_text(errors="replace")
+    return _excerpt_text(text, max_chars=max_chars)
+
+
+def _excerpt_text(text: str, *, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "\n\n[TRUNCATED]"
+
+
+def _raw_equation_candidates(markdown: str, number: str) -> list[str]:
+    tag = rf"\tag{{{number}}}"
+    paren = f"({number})"
+    candidates = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if tag in stripped or stripped.endswith(paren):
+            candidates.append(stripped)
+    return candidates[:5]
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:
@@ -276,62 +310,7 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     return parsed
 
 
-def _patch_from_dict(patch: dict[str, Any], *, applied: bool) -> AppliedPatch:
-    return AppliedPatch(
-        target_type=str(patch.get("target_type", "")),
-        target_id=str(patch.get("target_id", "")),
-        operation=str(patch.get("operation", "")),
-        before=str(patch.get("before", "")),
-        after=str(patch.get("after", "")),
-        confidence=str(patch.get("confidence", "")),
-        rationale=str(patch.get("rationale", "")),
-        evidence=[str(item) for item in patch.get("evidence", [])],
-        applied=applied,
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Reconcile extraction QA findings with an LLM")
-    parser.add_argument("book_dir", type=Path, help="converted/<book_id> directory")
-    parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", DEFAULT_MODEL))
-    parser.add_argument(
-        "--base-url",
-        default=None,
-        help="OpenAI-compatible /v1 endpoint. Defaults to OPENAI_BASE_URL.",
-    )
-    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", "ollama"))
-    parser.add_argument("--timeout", type=float, default=180.0)
-    parser.add_argument(
-        "--json-mode",
-        choices=["object", "schema", "none"],
-        default=os.getenv("LIBRARIAN_RECONCILE_JSON_MODE", "object"),
-        help="Use object for broad Ollama compatibility; schema for stricter OpenAI-compatible servers.",
-    )
-    parser.add_argument("--apply", action="store_true", help="Write clean/document.md and clean/corrections.json")
-    parser.add_argument(
-        "--packet-only",
-        action="store_true",
-        help="Only write review/reconciliation_packet.json; do not call the LLM.",
-    )
-    args = parser.parse_args()
-
-    try:
-        result = reconcile_book(
-            args.book_dir,
-            base_url=resolve_base_url(args.base_url),
-            api_key=args.api_key,
-            model=args.model,
-            timeout=args.timeout,
-            json_mode=args.json_mode,
-            apply=args.apply,
-            packet_only=args.packet_only,
-        )
-    except Exception as exc:
-        print(f"reconciliation failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-    print(json.dumps(result, indent=2))
-
-
 if __name__ == "__main__":
+    from librarian.reconcile_cli import main
+
     main()
