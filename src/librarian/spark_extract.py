@@ -9,6 +9,7 @@ Override the host via the `LIBRARIAN_SPARK_URL` env var if the Spark
 moves or you point this at a different host.
 """
 
+import base64
 import json
 import os
 import sys
@@ -29,6 +30,7 @@ def extract_pdf_via_spark(
     source: Path,
     output_dir: Path,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    write_html: bool = True,
 ) -> bool:
     """POST a PDF to the Spark marker service and write chunks to output_dir.
 
@@ -37,10 +39,17 @@ def extract_pdf_via_spark(
       - {book_id}_meta.json  document metadata
       - {book_id}.md         markdown rendered by _chunks_to_markdown
 
+    When write_html=True, also writes human-review artifacts from a second
+    Marker pass:
+      - {book_id}.html            rendered HTML
+      - {book_id}_html_meta.json  HTML-pass metadata
+      - referenced image files    JPEG/PNG payloads used by the HTML
+
     Args:
         source: Path to PDF file
         output_dir: Per-book output directory (its name is the book id)
         timeout: HTTP request timeout in seconds
+        write_html: Also request Marker HTML output for human QA
 
     Returns:
         True on successful extraction and write, False on any failure.
@@ -111,4 +120,68 @@ def extract_pdf_via_spark(
     from librarian.extract import _chunks_to_markdown
     (output_dir / f"{book_id}.md").write_text(_chunks_to_markdown(chunks_path))
 
+    if write_html:
+        _write_html_artifacts(source, output_dir, timeout)
+
     return True
+
+
+def _write_html_artifacts(source: Path, output_dir: Path, timeout: int) -> None:
+    """Write Marker HTML output beside the canonical chunks artifacts.
+
+    HTML is a human-QA convenience, not the canonical indexing artifact. If
+    Marker fails to produce it, log the issue but leave the extraction usable.
+    """
+    book_id = output_dir.name
+    url = f"{get_spark_url()}/marker/upload"
+
+    print("  Requesting HTML companion artifact for review...", flush=True)
+
+    try:
+        with open(source, "rb") as fh:
+            response = httpx.post(
+                url,
+                files={"file": (source.name, fh, "application/pdf")},
+                data={"output_format": "html"},
+                timeout=timeout,
+            )
+    except httpx.HTTPError as e:
+        print(f"  Spark HTML request failed: {e}", file=sys.stderr)
+        return
+
+    if response.is_error:
+        print(
+            f"  Spark HTML returned HTTP {response.status_code}: {response.text[:300]}",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        payload = response.json()
+    except ValueError as e:
+        print(f"  Spark HTML response was not JSON: {e}", file=sys.stderr)
+        return
+
+    if not payload.get("success"):
+        print(
+            f"  Spark HTML extraction failed: {payload.get('error', 'unknown error')}",
+            file=sys.stderr,
+        )
+        return
+
+    html = payload.get("output")
+    if not html:
+        print("  Spark HTML response missing 'output' field", file=sys.stderr)
+        return
+
+    (output_dir / f"{book_id}.html").write_text(html)
+    (output_dir / f"{book_id}_html_meta.json").write_text(
+        json.dumps(payload.get("metadata", {}), indent=2)
+    )
+
+    for name, encoded in (payload.get("images") or {}).items():
+        image_path = output_dir / Path(name).name
+        try:
+            image_path.write_bytes(base64.b64decode(encoded))
+        except Exception as e:
+            print(f"  Failed to write HTML image {name}: {e}", file=sys.stderr)
