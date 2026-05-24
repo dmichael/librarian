@@ -1,27 +1,38 @@
-"""File discovery for marker output."""
+"""File discovery for extracted book artifacts."""
 
 from pathlib import Path
 import json
 
 
+MARKER_DIR = Path("raw") / "marker"
+
+
+def marker_dir(book_dir: Path) -> Path:
+    """Return the canonical raw Marker artifact directory for a book."""
+    return book_dir / MARKER_DIR
+
+
 def find_content_json(book_dir: Path) -> Path | None:
     """Find the marker content JSON for a book."""
-    book_id = book_dir.name
-    path = book_dir / f"{book_id}.json"
+    path = marker_dir(book_dir) / "document.json"
     return path if path.exists() else None
 
 
 def find_meta_json(book_dir: Path) -> Path | None:
     """Find the marker metadata JSON for a book."""
-    book_id = book_dir.name
-    path = book_dir / f"{book_id}_meta.json"
+    path = marker_dir(book_dir) / "metadata.json"
     return path if path.exists() else None
 
 
 def find_markdown(book_dir: Path) -> Path | None:
     """Find the markdown file for a book."""
-    book_id = book_dir.name
-    path = book_dir / f"{book_id}.md"
+    path = marker_dir(book_dir) / "document.md"
+    return path if path.exists() else None
+
+
+def find_html(book_dir: Path) -> Path | None:
+    """Find the marker HTML file for a book."""
+    path = marker_dir(book_dir) / "document.html"
     return path if path.exists() else None
 
 

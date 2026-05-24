@@ -15,6 +15,7 @@ from pathlib import Path
 
 from librarian.equations import extract_equations_from_blocks
 from librarian.extractors import ExtractorResult, PdfTextExtractor
+from librarian.files import find_content_json, marker_dir
 
 
 @dataclass
@@ -60,8 +61,8 @@ def write_extraction_qa(source: Path, output_dir: Path) -> ExtractionQAResult:
     review_dir = output_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
 
-    marker_json = output_dir / f"{output_dir.name}.json"
-    if not marker_json.exists():
+    marker_json = find_content_json(output_dir)
+    if marker_json is None:
         result = ExtractionQAResult(
             success=False,
             marker_equations=0,
@@ -69,7 +70,7 @@ def write_extraction_qa(source: Path, output_dir: Path) -> ExtractionQAResult:
             findings=0,
             review_dir=str(review_dir),
             raw_outputs={},
-            error=f"Marker JSON not found: {marker_json}",
+            error=f"Marker JSON not found under {marker_dir(output_dir)}",
         )
         _write_review_markdown(review_dir / "extraction_qa.md", [], result)
         return result
@@ -310,13 +311,12 @@ def _write_review_markdown(
 
 def _write_artifact_manifest(output_dir: Path, result: ExtractionQAResult) -> None:
     """Write a compact manifest for artifact discovery and audits."""
-    book_id = output_dir.name
     expected = {
-        "marker_json": f"{book_id}.json",
-        "marker_markdown": f"{book_id}.md",
-        "marker_metadata": f"{book_id}_meta.json",
-        "marker_html": f"{book_id}.html",
-        "marker_html_metadata": f"{book_id}_html_meta.json",
+        "marker_json": "raw/marker/document.json",
+        "marker_markdown": "raw/marker/document.md",
+        "marker_metadata": "raw/marker/metadata.json",
+        "marker_html": "raw/marker/document.html",
+        "marker_html_metadata": "raw/marker/html_metadata.json",
         "pdftext_layout": result.raw_outputs.get("pdftext"),
         "equation_diffs": "review/equation_diffs.json",
         "qa_report": "review/extraction_qa.md",
@@ -339,17 +339,17 @@ def _write_artifact_manifest(output_dir: Path, result: ExtractionQAResult) -> No
         )
 
     image_artifacts = []
-    for image_path in sorted(output_dir.glob("_page_*")):
+    for image_path in sorted((output_dir / "raw" / "marker" / "images").glob("_page_*")):
         if image_path.is_file():
             image_artifacts.append(
                 {
-                    "path": image_path.name,
+                    "path": str(image_path.relative_to(output_dir)),
                     "bytes": image_path.stat().st_size,
                 }
             )
 
     manifest = {
-        "book_id": book_id,
+        "book_id": output_dir.name,
         "base_dir": ".",
         "artifacts": artifacts,
         "images": image_artifacts,

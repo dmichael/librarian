@@ -18,6 +18,8 @@ import json
 import sys
 from pathlib import Path
 
+from librarian.files import marker_dir
+
 # Modal import is optional - only needed when --cloud is used
 try:
     import modal
@@ -294,15 +296,18 @@ def extract_books_cloud(
                     book_output = output_path / str(book_id)
                     book_output.mkdir(parents=True, exist_ok=True)
 
+                    raw_dir = marker_dir(book_output)
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+
                     # Write chunks JSON
-                    (book_output / f"{book_id}.json").write_text(result["chunks_json"])
+                    (raw_dir / "document.json").write_text(result["chunks_json"])
 
                     # Write meta JSON if present
                     if result["meta_json"]:
-                        (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
+                        (raw_dir / "metadata.json").write_text(result["meta_json"])
 
                     # Write markdown
-                    (book_output / f"{book_id}.md").write_text(result["markdown"])
+                    (raw_dir / "document.md").write_text(result["markdown"])
 
                     # Update Calibre state
                     source_hash = compute_file_hash(job["source_file"])
@@ -373,10 +378,12 @@ def _extract_with_limit(
                 if result["success"]:
                     book_output = output_path / str(book_id)
                     book_output.mkdir(parents=True, exist_ok=True)
-                    (book_output / f"{book_id}.json").write_text(result["chunks_json"])
+                    raw_dir = marker_dir(book_output)
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    (raw_dir / "document.json").write_text(result["chunks_json"])
                     if result["meta_json"]:
-                        (book_output / f"{book_id}_meta.json").write_text(result["meta_json"])
-                    (book_output / f"{book_id}.md").write_text(result["markdown"])
+                        (raw_dir / "metadata.json").write_text(result["meta_json"])
+                    (raw_dir / "document.md").write_text(result["markdown"])
                     source_hash = compute_file_hash(job["source_file"])
                     update_calibre_extraction_state(library_path, book_id, source_hash)
                     print(f"  [{book_id}] {title}: Done")

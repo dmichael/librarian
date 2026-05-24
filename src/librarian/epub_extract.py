@@ -18,6 +18,8 @@ from ebooklib import epub
 from markdownify import markdownify
 from bs4 import BeautifulSoup
 
+from librarian.files import marker_dir
+
 
 def _classify_block(tag_name: str, text: str) -> str:
     """Map HTML tag to marker-compatible block_type."""
@@ -129,15 +131,18 @@ def extract_epub(epub_path: Path, book_id: int, output_dir: Path) -> dict:
         result["error"] = "No content extracted from EPUB"
         return result
 
-    # Write output files
+    # Write output files. EPUB extraction is not Marker, but today the indexer
+    # consumes the same raw block/markdown contract for all extracted books.
     output_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = marker_dir(output_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
 
     chunks_data = {"blocks": all_blocks}
     chunks_json = json.dumps(chunks_data, ensure_ascii=False)
-    (output_dir / f"{book_id}.json").write_text(chunks_json)
+    (raw_dir / "document.json").write_text(chunks_json)
 
     markdown = "\n\n".join(md_parts)
-    (output_dir / f"{book_id}.md").write_text(markdown)
+    (raw_dir / "document.md").write_text(markdown)
 
     result["success"] = True
     result["block_count"] = len(all_blocks)

@@ -21,7 +21,7 @@ from xml.etree import ElementTree as ET
 import markdownify
 
 from librarian.config import expand_path, load_config
-from librarian.files import find_content_json
+from librarian.files import find_content_json, marker_dir
 from librarian import calibre
 
 TOOL_VERSION = "marker-0.1.0"  # Update when extraction tools change
@@ -195,9 +195,9 @@ def extract_pdf(source: Path, output_dir: Path) -> bool:
     """Extract PDF to chunks JSON via the Spark marker HTTP service.
 
     Produces:
-    - {book_id}.json: Content blocks
-    - {book_id}_meta.json: Document metadata
-    - {book_id}.md: Markdown for human reading
+    - raw/marker/document.json: Content blocks
+    - raw/marker/metadata.json: Document metadata
+    - raw/marker/document.md: Markdown for human reading
 
     Per-book dispatch only happens for the --spark path; the --cloud
     (Modal) path runs as a separate batch in main() before per-book
@@ -208,18 +208,14 @@ def extract_pdf(source: Path, output_dir: Path) -> bool:
     if not extract_pdf_via_spark(source, output_dir):
         return False
 
-    book_id = output_dir.name
-    content_file = output_dir / f"{book_id}.json"
-
-    markdown = _chunks_to_markdown(content_file)
-    (output_dir / f"{book_id}.md").write_text(markdown)
     return True
 
 
 def extract_epub(source: Path, output_dir: Path) -> bool:
     """Extract EPUB to markdown by parsing XHTML content."""
-    book_id = output_dir.name
-    output_file = output_dir / f"{book_id}.md"
+    raw_dir = marker_dir(output_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    output_file = raw_dir / "document.md"
     chapters_dir = output_dir / "chapters"
     chapters_dir.mkdir(exist_ok=True)
 

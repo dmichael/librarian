@@ -3,13 +3,13 @@
 Book: Simple Motor Gestures for Birdsongs  
 Authors: Tim Gardner, G. Cecchi, M. Magnasco, R. Laje, Gabriel B. Mindlin  
 Source: Gardner et al. 2001, Physical Review Letters 87, 208101  
-Audit target: current Marker extraction from `/Volumes/librarian/converted/2/2.md`
+Audit target: current Marker extraction from `/Volumes/librarian/converted/2/raw/marker/document.md`
 
 Use `pass`, `partial`, or `fail`. The goal is not perfect transcription; it is whether the extraction is good enough for grounded retrieval, synthetic QA generation, and later fine-tuning examples.
 
 ## Extraction Snapshot
 
-- Extracted files: `2.md`, `2.json`, `2_meta.json`, `2.html`, `2_html_meta.json`, extracted figure images
+- Extracted files: `raw/marker/document.md`, `raw/marker/document.json`, `raw/marker/metadata.json`, `raw/marker/document.html`, `raw/marker/html_metadata.json`, `raw/marker/images/*`
 - Marker blocks: 62
 - Logical pages in metadata: 4
 - Page extraction methods:
@@ -55,7 +55,7 @@ This document is now the first fixture for the fixed empirical extraction batter
 
 | Extractor | Purpose | Artifact | Status | Notes |
 |---|---|---|---|---|
-| Marker | Main readable extraction: Markdown, JSON blocks, HTML, figures, equations. | `2.md`, `2.json`, `2.html`, images | active | Strong layout/reading-order result; one known equation symbol error in Eq. 10. |
+| Marker | Main readable extraction: Markdown, JSON blocks, HTML, figures, equations. | `raw/marker/document.md`, `raw/marker/document.json`, `raw/marker/document.html`, `raw/marker/images/*` | active | Strong layout/reading-order result; one known equation symbol error in Eq. 10. |
 | pdftotext | Embedded-text comparison baseline. | `raw/pdftext/layout.txt` | active on branch | Caught Eq. 10 `phi_j`; not suitable as primary Markdown because two-column layout and figure text are noisy. |
 | GROBID | Scholarly structure, references, citation graph. | TBD | planned | Should be added before/with reference audit, because references are domain-graph inputs. |
 | Docling | Full-document parser benchmark. | TBD | deferred | Useful later, but less urgent than GROBID for graph extraction. |

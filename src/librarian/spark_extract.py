@@ -17,6 +17,8 @@ from pathlib import Path
 
 import httpx
 
+from librarian.files import marker_dir
+
 
 DEFAULT_SPARK_URL = "http://spark-f80b.local:8001"
 DEFAULT_TIMEOUT_SECONDS = 1800  # 30 min per book
@@ -34,16 +36,16 @@ def extract_pdf_via_spark(
 ) -> bool:
     """POST a PDF to the Spark marker service and write chunks to output_dir.
 
-    Produces the same files as the local extract_pdf path:
-      - {book_id}.json       chunks (block list)
-      - {book_id}_meta.json  document metadata
-      - {book_id}.md         markdown rendered by _chunks_to_markdown
+    Produces raw Marker artifacts under raw/marker:
+      - document.json       chunks (block list)
+      - metadata.json       document metadata
+      - document.md         markdown rendered by _chunks_to_markdown
 
     When write_html=True, also writes human-review artifacts from a second
     Marker pass:
-      - {book_id}.html            rendered HTML
-      - {book_id}_html_meta.json  HTML-pass metadata
-      - referenced image files    JPEG/PNG payloads used by the HTML
+      - document.html          rendered HTML
+      - html_metadata.json     HTML-pass metadata
+      - images/*               JPEG/PNG payloads used by the HTML
 
     Args:
         source: Path to PDF file
@@ -54,8 +56,9 @@ def extract_pdf_via_spark(
     Returns:
         True on successful extraction and write, False on any failure.
     """
-    book_id = output_dir.name
     url = f"{get_spark_url()}/marker/upload"
+    marker_output_dir = marker_dir(output_dir)
+    marker_output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"  Extracting via Spark marker service ({url})...", flush=True)
 
@@ -103,12 +106,10 @@ def extract_pdf_via_spark(
         print(f"  Spark chunks JSON malformed: {e}", file=sys.stderr)
         return False
 
-    # Write content + metadata to the predictable paths the rest of the
-    # pipeline expects (matching what _collect_marker_output produces on
-    # the local path).
-    chunks_path = output_dir / f"{book_id}.json"
+    # Write raw Marker content + metadata to the canonical raw extractor path.
+    chunks_path = marker_output_dir / "document.json"
     chunks_path.write_text(json.dumps(chunks_data, indent=2))
-    (output_dir / f"{book_id}_meta.json").write_text(
+    (marker_output_dir / "metadata.json").write_text(
         json.dumps(payload.get("metadata", {}), indent=2)
     )
 
@@ -118,7 +119,7 @@ def extract_pdf_via_spark(
     # write. The leading underscore on _chunks_to_markdown is intentional
     # private-within-package — we're a sibling, not an external user.
     from librarian.extract import _chunks_to_markdown
-    (output_dir / f"{book_id}.md").write_text(_chunks_to_markdown(chunks_path))
+    (marker_output_dir / "document.md").write_text(_chunks_to_markdown(chunks_path))
 
     if write_html:
         _write_html_artifacts(source, output_dir, timeout)
@@ -153,8 +154,10 @@ def _write_html_artifacts(source: Path, output_dir: Path, timeout: int) -> None:
     HTML is a human-QA convenience, not the canonical indexing artifact. If
     Marker fails to produce it, log the issue but leave the extraction usable.
     """
-    book_id = output_dir.name
     url = f"{get_spark_url()}/marker/upload"
+    marker_output_dir = marker_dir(output_dir)
+    image_dir = marker_output_dir / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
 
     print("  Requesting HTML companion artifact for review...", flush=True)
 
@@ -195,13 +198,13 @@ def _write_html_artifacts(source: Path, output_dir: Path, timeout: int) -> None:
         print("  Spark HTML response missing 'output' field", file=sys.stderr)
         return
 
-    (output_dir / f"{book_id}.html").write_text(html)
-    (output_dir / f"{book_id}_html_meta.json").write_text(
+    (marker_output_dir / "document.html").write_text(html)
+    (marker_output_dir / "html_metadata.json").write_text(
         json.dumps(payload.get("metadata", {}), indent=2)
     )
 
     for name, encoded in (payload.get("images") or {}).items():
-        image_path = output_dir / Path(name).name
+        image_path = image_dir / Path(name).name
         try:
             image_path.write_bytes(base64.b64decode(encoded))
         except Exception as e:

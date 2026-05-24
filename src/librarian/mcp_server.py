@@ -1677,9 +1677,11 @@ def suggest_tags(book_id: int) -> dict:
             parts.extend(book.authors)
 
         # Read first ~2000 tokens from extracted markdown
+        from librarian.files import find_markdown
+
         output_path = expand_path(config["output_path"])
-        md_file = output_path / str(book_id) / f"{book_id}.md"
-        if md_file.exists():
+        md_file = find_markdown(output_path / str(book_id))
+        if md_file and md_file.exists():
             text = md_file.read_text(errors="replace")[:8000]  # ~2000 tokens
             parts.append(text)
 
