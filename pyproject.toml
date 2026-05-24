@@ -71,6 +71,7 @@ librarian-benchmark = "librarian.benchmark:main"
 librarian-stats = "librarian.stats:main"
 librarian-toc = "librarian.stats:toc_main"
 librarian-extraction-qa = "librarian.extraction_qa:main"
+librarian-reconcile = "librarian.reconcile:main"
 # Legacy (deprecated)
 librarian-ingest = "librarian.ingest:main"
 librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
