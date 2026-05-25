@@ -3,7 +3,7 @@
 Writes Marker's chunks/markdown/HTML/images/metadata to raw/marker/.
 
 Backends:
-  - "spark": POST to the Spark marker HTTP service (default; LAN GPU).
+  - "spark": POST to the Spark marker HTTP service (LAN GPU).
 
 The cloud (Modal) backend is a batch operation by nature and stays in
 librarian.cloud_extract for now; it will be aligned to this interface in
@@ -14,19 +14,12 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import shutil
 from pathlib import Path
 
 import httpx
 
 from librarian.files import chunks_to_markdown, marker_dir
-
-
-NAME = "marker"
-
-DEFAULT_SPARK_URL = "http://spark-f80b.local:8001"
-DEFAULT_TIMEOUT_SECONDS = 1800  # 30 min per book
 
 
 class MarkerExtractionError(RuntimeError):
@@ -38,7 +31,8 @@ def extract(
     book_dir: Path,
     *,
     backend: str = "spark",
-    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    spark_url: str | None = None,
+    timeout: int = 1800,
     write_html: bool = True,
 ) -> None:
     """Extract source into book_dir/raw/marker/. Raises on any failure.
@@ -54,7 +48,11 @@ def extract(
       - raw/marker/images/*            JPEG/PNG payloads used by the HTML
     """
     if backend == "spark":
-        _extract_via_spark(source, book_dir, timeout=timeout, write_html=write_html)
+        if not spark_url:
+            raise ValueError("spark_url is required for backend='spark'")
+        _extract_via_spark(
+            source, book_dir, spark_url=spark_url, timeout=timeout, write_html=write_html
+        )
     elif backend == "cloud":
         raise NotImplementedError(
             "marker cloud backend is not yet exposed through extract(); "
@@ -69,18 +67,15 @@ def extract(
 # ---------------------------------------------------------------------------
 
 
-def _spark_url() -> str:
-    return os.environ.get("LIBRARIAN_SPARK_URL", DEFAULT_SPARK_URL).rstrip("/")
-
-
 def _extract_via_spark(
     source: Path,
     book_dir: Path,
     *,
+    spark_url: str,
     timeout: int,
     write_html: bool,
 ) -> None:
-    url = f"{_spark_url()}/marker/upload"
+    url = f"{spark_url.rstrip('/')}/marker/upload"
     _prepare_output_layout(book_dir)
     marker_output_dir = marker_dir(book_dir)
     marker_output_dir.mkdir(parents=True, exist_ok=True)
@@ -106,17 +101,13 @@ def _extract_via_spark(
     (marker_output_dir / "document.md").write_text(chunks_to_markdown(chunks_path))
 
     if write_html:
-        _write_html_artifacts(source, book_dir, timeout)
+        _write_html_artifacts(url, source, book_dir, timeout)
 
 
 def _post_to_spark(
     url: str, source: Path, *, output_format: str, timeout: int
 ) -> dict:
-    """POST a PDF to the Spark service and return the parsed payload.
-
-    Raises MarkerExtractionError on any failure: connection, HTTP status,
-    non-JSON response, or service-level success=False.
-    """
+    """POST a PDF to the Spark service and return the parsed payload."""
     try:
         with open(source, "rb") as fh:
             response = httpx.post(
@@ -146,9 +137,8 @@ def _post_to_spark(
     return payload
 
 
-def _write_html_artifacts(source: Path, book_dir: Path, timeout: int) -> None:
+def _write_html_artifacts(url: str, source: Path, book_dir: Path, timeout: int) -> None:
     """Write Marker HTML companion artifact + images. Raises on any failure."""
-    url = f"{_spark_url()}/marker/upload"
     marker_output_dir = marker_dir(book_dir)
     image_dir = marker_output_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -167,17 +157,11 @@ def _write_html_artifacts(source: Path, book_dir: Path, timeout: int) -> None:
     )
 
     for name, encoded in (payload.get("images") or {}).items():
-        image_path = image_dir / Path(name).name
-        image_path.write_bytes(base64.b64decode(encoded))
+        (image_dir / Path(name).name).write_bytes(base64.b64decode(encoded))
 
 
 def _prepare_output_layout(book_dir: Path) -> None:
-    """Clear stale marker artifacts before a fresh extraction.
-
-    Removes legacy root-level marker files from the pre-raw/ layout, and
-    wipes the current raw/marker/ directory. Source PDFs live elsewhere
-    and are never touched here.
-    """
+    """Clear stale marker artifacts before a fresh extraction."""
     book_dir.mkdir(parents=True, exist_ok=True)
     book_id = book_dir.name
 

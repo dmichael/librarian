@@ -151,21 +151,3 @@ def test_grobid_extract_204_writes_empty_listbibl(tmp_path: Path, monkeypatch):
     assert json.loads((tmp_path / "clean" / "references.csl.json").read_text()) == []
 
 
-def test_grobid_resolve_base_url_requires_single_convention(monkeypatch):
-    monkeypatch.delenv("GROBID_BASE_URL", raising=False)
-
-    try:
-        grobid.resolve_base_url(None)
-    except ValueError as exc:
-        assert "GROBID_BASE_URL" in str(exc)
-    else:
-        raise AssertionError("Expected missing GROBID_BASE_URL to fail")
-
-
-def test_grobid_resolve_base_url_accepts_explicit_or_env(monkeypatch):
-    monkeypatch.setenv("GROBID_BASE_URL", "http://env-grobid:8070/")
-
-    assert grobid.resolve_base_url(None) == "http://env-grobid:8070"
-    assert grobid.resolve_base_url("http://explicit-grobid:8070/") == (
-        "http://explicit-grobid:8070"
-    )

@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from librarian.extractors import grobid
 
+import os
+
 
 TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
@@ -72,7 +74,7 @@ def build_references(book_dir: Path) -> ReferencesResult:
 
     Raises FileNotFoundError if the GROBID extractor hasn't run.
     """
-    raw_path = book_dir / grobid.ARTIFACT_REL_PATH
+    raw_path = book_dir / "raw" / "grobid" / "references.tei.xml"
     if not raw_path.exists():
         raise FileNotFoundError(
             f"GROBID raw TEI not found at {raw_path}; run the grobid extractor first"
@@ -254,20 +256,25 @@ def main() -> None:
         default=None,
         help="GROBID service root URL. Defaults to GROBID_BASE_URL.",
     )
-    parser.add_argument("--timeout", type=float, default=grobid.DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--consolidate-citations",
         choices=["0", "1", "2"],
-        default=grobid.DEFAULT_CONSOLIDATE_CITATIONS,
+        default="0",
         help="GROBID citation consolidation mode.",
     )
     args = parser.parse_args()
+
+    base_url = args.grobid_url or os.getenv("GROBID_BASE_URL")
+    if not base_url:
+        print("Set --grobid-url or GROBID_BASE_URL", file=sys.stderr)
+        raise SystemExit(2)
 
     try:
         grobid.extract(
             args.source_pdf,
             args.book_dir,
-            base_url=args.grobid_url,
+            base_url=base_url,
             timeout=args.timeout,
             consolidate_citations=args.consolidate_citations,
         )

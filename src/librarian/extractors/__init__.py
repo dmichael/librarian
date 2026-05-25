@@ -9,6 +9,6 @@ No common base class. No registry. Add a new extractor by adding a new
 module with an `extract` function and one line at the orchestration site.
 """
 
-from librarian.extractors import grobid, marker, pdftext
+from librarian.extractors import grobid, marker
 
-__all__ = ["grobid", "marker", "pdftext"]
+__all__ = ["grobid", "marker"]

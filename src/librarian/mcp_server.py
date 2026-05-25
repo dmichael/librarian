@@ -350,8 +350,8 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
     """Background worker for book extraction.
 
     Routing:
-      - PDF  → librarian.extract.extract_pdf (runs marker + pdftext + grobid,
-               then extraction QA and references domain builder)
+      - PDF  → librarian.extract.extract_pdf (runs marker + grobid extractors,
+               then the references domain builder)
       - EPUB → local ebooklib-based extractor (librarian.epub_extract)
 
     Modal cloud extraction lives in librarian.cloud_extract and is no

@@ -154,35 +154,37 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
 
 
 def extract_pdf(source: Path, output_dir: Path) -> None:
-    """Run every PDF extractor over source, then QA + domain builders.
+    """Run every PDF extractor over source, then build per-domain clean outputs.
 
     Extractors (each writes raw/<name>/):
       - marker    raw/marker/{document.json, document.md, document.html, ...}
-      - pdftext   raw/pdftext/layout.txt
       - grobid    raw/grobid/references.tei.xml
 
-    Then:
-      - extraction QA   review/{extraction_qa.md, equation_diffs.json, artifacts.json}
-      - references      clean/references.csl.json
+    Domain builders (read raw/, write clean/):
+      - references   clean/references.csl.json
 
     Raises on any failure. The per-book / per-batch policy on what to do
     with a failed extraction lives in main(), not here.
+
+    Config (env vars, hard-required — no fallbacks):
+      LIBRARIAN_SPARK_URL    Marker HTTP service root (e.g. http://spark-f80b.local:8001)
+      GROBID_BASE_URL        GROBID service root      (e.g. http://spark-f80b.local:8070)
     """
-    from librarian.extraction_qa import write_extraction_qa
-    from librarian.extractors import grobid, marker, pdftext
+    import os
+
+    from librarian.extractors import grobid, marker
     from librarian.references import build_references
 
-    marker.extract(source, output_dir, backend="spark")
-    pdftext.extract(source, output_dir)
-    grobid_url = grobid.resolve_base_url(None)
+    spark_url = os.environ.get("LIBRARIAN_SPARK_URL")
+    if not spark_url:
+        raise ValueError("Set LIBRARIAN_SPARK_URL to the Spark marker service root")
+    grobid_url = os.environ.get("GROBID_BASE_URL")
+    if not grobid_url:
+        raise ValueError("Set GROBID_BASE_URL to the GROBID service root")
+
+    marker.extract(source, output_dir, backend="spark", spark_url=spark_url)
     print(f"  Extracting references via GROBID ({grobid_url})...", flush=True)
     grobid.extract(source, output_dir, base_url=grobid_url)
-
-    qa = write_extraction_qa(source, output_dir)
-    print(
-        f"  Wrote extraction QA report ({qa.findings} findings) to {qa.review_dir}",
-        flush=True,
-    )
 
     refs = build_references(output_dir)
     print(f"  Wrote {refs.count} references to {refs.csl_json_path}", flush=True)
