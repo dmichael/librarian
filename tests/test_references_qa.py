@@ -38,27 +38,57 @@ def test_extract_visible_references_from_marker_json_reads_marker_list_items(tmp
 
 
 def test_build_references_qa_flags_count_and_extra_structured_label(tmp_path: Path):
-    _write_marker_json(tmp_path, ["[1] Alpha.", "[2] Beta includes See Gamma."])
+    _write_marker_json(
+        tmp_path,
+        [
+            "[1] Alpha.",
+            "[2] Beta includes See Gamma.",
+            "[3] Delta.",
+        ],
+    )
     _write_csl_json(
         tmp_path,
         [
             {"id": "ref-1", "title": "Alpha"},
             {"id": "ref-2", "title": "Beta"},
             {"id": "ref-3", "title": "See Gamma."},
+            {"id": "ref-4", "title": "Delta"},
         ],
     )
 
     result = build_references_qa(tmp_path)
 
-    assert result.marker_count == 2
-    assert result.csl_count == 3
-    assert result.extra_structured_labels == [3]
+    assert result.marker_count == 3
+    assert result.csl_count == 4
+    assert result.extra_structured_labels == [4]
     assert [issue.code for issue in result.issues] == [
         "reference_count_mismatch",
         "extra_structured_labels",
         "likely_split_reference",
     ]
     assert result.likely_split_labels == [2]
+
+
+def test_build_references_qa_does_not_call_shifted_final_reference_a_split(tmp_path: Path):
+    _write_marker_json(
+        tmp_path,
+        [
+            "[1] Alpha includes See Beta.",
+            "[2] Gamma.",
+        ],
+    )
+    _write_csl_json(
+        tmp_path,
+        [
+            {"id": "ref-1", "title": "Alpha"},
+            {"id": "ref-2", "title": "See Beta."},
+            {"id": "ref-3", "title": "Gamma"},
+        ],
+    )
+
+    result = build_references_qa(tmp_path)
+
+    assert result.likely_split_labels == [1]
 
 
 def test_write_references_qa_writes_json_and_markdown(tmp_path: Path):

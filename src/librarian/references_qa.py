@@ -289,17 +289,25 @@ def _likely_split_labels(
     visible: list[VisibleReference], structured: list[StructuredReference]
 ) -> list[int]:
     visible_by_label = {item.label: item for item in visible}
+    structured_by_label = {item.label: item for item in structured}
     likely: set[int] = set()
-    for item in structured:
-        if item.label in visible_by_label:
+    for label, visible_item in visible_by_label.items():
+        current = structured_by_label.get(label)
+        following = structured_by_label.get(label + 1)
+        if not current or not following:
             continue
-        raw = item.raw_reference or item.title or ""
-        if not raw:
-            continue
-        previous = visible_by_label.get(item.label - 1)
-        if previous and _compact(raw[:80]) in _compact(previous.text):
-            likely.add(previous.label)
+        visible_text = _compact(visible_item.text)
+        current_text = _reference_fingerprint(current)
+        following_text = _reference_fingerprint(following)
+        if current_text and following_text and current_text in visible_text and following_text in visible_text:
+            likely.add(label)
     return sorted(likely)
+
+
+def _reference_fingerprint(item: StructuredReference) -> str:
+    text = item.raw_reference or item.title or ""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return "".join(words[:8])
 
 
 def _compact(text: str) -> str:
