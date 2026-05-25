@@ -42,8 +42,7 @@ def test_build_references_qa_flags_count_and_extra_structured_label(tmp_path: Pa
         tmp_path,
         [
             "[1] Alpha.",
-            "[2] Beta includes a long note about oscillation, pressure, syrinx, theory, "
-            "song, model, labia, airflow, dynamics, equations, and then See Gamma.",
+            "[2] Beta includes See Gamma.",
             "[3] Delta.",
         ],
     )
@@ -65,62 +64,7 @@ def test_build_references_qa_flags_count_and_extra_structured_label(tmp_path: Pa
     assert [issue.code for issue in result.issues] == [
         "reference_count_mismatch",
         "extra_structured_labels",
-        "likely_split_reference",
     ]
-    assert result.likely_split_labels == [2]
-
-
-def test_build_references_qa_does_not_call_shifted_final_reference_a_split(tmp_path: Path):
-    _write_marker_json(
-        tmp_path,
-        [
-            "[1] Alpha includes a long explanatory note with many scientific content "
-            "tokens about oscillation, pressure, syrinx, theory, song, model, labia, "
-            "airflow, dynamics, equations, and then See Beta.",
-            "[2] Gamma concludes.",
-        ],
-    )
-    _write_csl_json(
-        tmp_path,
-        [
-            {"id": "ref-1", "title": "Alpha"},
-            {"id": "ref-2", "title": "See Beta."},
-            {"id": "ref-3", "title": "Gamma"},
-        ],
-    )
-
-    result = build_references_qa(tmp_path)
-
-    assert result.likely_split_labels == [1]
-
-
-def test_build_references_qa_ignores_shifted_short_reference(tmp_path: Path):
-    _write_marker_json(
-        tmp_path,
-        [
-            "[1] Alpha includes a long explanatory note with many scientific content "
-            "tokens about oscillation, pressure, syrinx, theory, song, model, labia, "
-            "airflow, dynamics, equations, and then See Beta.",
-            "[2] Calder, Comp. Biochem. Physiol. 32, 251-258 (1970).",
-            "[3] Hartley and Suthers, J. Comp. Physiol. 165, 15-26 (1989).",
-        ],
-    )
-    _write_csl_json(
-        tmp_path,
-        [
-            {"id": "ref-1", "title": "Alpha"},
-            {"id": "ref-2", "title": "See Beta."},
-            {"id": "ref-3", "title": "Calder, Comp. Biochem. Physiol. 32, 251-258 (1970)."},
-            {
-                "id": "ref-4",
-                "title": "Hartley and Suthers, J. Comp. Physiol. 165, 15-26 (1989).",
-            },
-        ],
-    )
-
-    result = build_references_qa(tmp_path)
-
-    assert result.likely_split_labels == [1]
 
 
 def test_write_references_qa_writes_json_and_markdown(tmp_path: Path):

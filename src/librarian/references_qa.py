@@ -51,7 +51,6 @@ class ReferencesQAResult(BaseModel):
     missing_marker_labels: list[int]
     extra_structured_labels: list[int]
     duplicate_marker_labels: list[int]
-    likely_split_labels: list[int]
     issues: list[ReferenceIssue]
 
 
@@ -83,14 +82,12 @@ def build_references_qa(book_dir: Path) -> ReferencesQAResult:
     missing_marker_labels = _missing_in_sequence(marker_labels)
     extra_structured_labels = sorted(set(csl_labels) - set(marker_labels))
     duplicate_marker_labels = _duplicates(marker_labels)
-    likely_split_labels = _likely_split_labels(visible, structured)
     issues = _reference_issues(
         marker_count=len(visible),
         csl_count=len(structured),
         missing_marker_labels=missing_marker_labels,
         extra_structured_labels=extra_structured_labels,
         duplicate_marker_labels=duplicate_marker_labels,
-        likely_split_labels=likely_split_labels,
     )
 
     return ReferencesQAResult(
@@ -103,7 +100,6 @@ def build_references_qa(book_dir: Path) -> ReferencesQAResult:
         missing_marker_labels=missing_marker_labels,
         extra_structured_labels=extra_structured_labels,
         duplicate_marker_labels=duplicate_marker_labels,
-        likely_split_labels=likely_split_labels,
         issues=issues,
     )
 
@@ -156,7 +152,6 @@ def _reference_issues(
     missing_marker_labels: list[int],
     extra_structured_labels: list[int],
     duplicate_marker_labels: list[int],
-    likely_split_labels: list[int],
 ) -> list[ReferenceIssue]:
     issues: list[ReferenceIssue] = []
     if marker_count != csl_count:
@@ -195,18 +190,6 @@ def _reference_issues(
                 severity="warn",
                 message="Marker-visible bibliography contains duplicate labels.",
                 labels=duplicate_marker_labels,
-            )
-        )
-    if likely_split_labels:
-        issues.append(
-            ReferenceIssue(
-                code="likely_split_reference",
-                severity="warn",
-                message=(
-                    "Structured references appear to split content that Marker keeps inside one "
-                    "numbered bibliography entry."
-                ),
-                labels=likely_split_labels,
             )
         )
     return issues
@@ -283,56 +266,6 @@ def _duplicates(labels: list[int]) -> list[int]:
             duplicates.add(label)
         seen.add(label)
     return sorted(duplicates)
-
-
-def _likely_split_labels(
-    visible: list[VisibleReference], structured: list[StructuredReference]
-) -> list[int]:
-    visible_by_label = {item.label: item for item in visible}
-    structured_by_label = {item.label: item for item in structured}
-    likely: set[int] = set()
-    for label, visible_item in visible_by_label.items():
-        current = structured_by_label.get(label)
-        following = structured_by_label.get(label + 1)
-        if not current or not following:
-            continue
-        if len(_content_tokens(visible_item.text)) < 12:
-            continue
-        visible_tokens = _content_tokens(visible_item.text)
-        current_overlap = _token_overlap(_content_tokens(_reference_text(current)), visible_tokens)
-        following_overlap = _token_overlap(_content_tokens(_reference_text(following)), visible_tokens)
-        if current_overlap >= 0.25 and following_overlap >= 0.45:
-            likely.add(label)
-    return sorted(likely)
-
-
-def _reference_text(item: StructuredReference) -> str:
-    return item.raw_reference or item.title or ""
-
-
-def _content_tokens(text: str) -> set[str]:
-    stopwords = {
-        "and",
-        "the",
-        "for",
-        "with",
-        "this",
-        "that",
-        "see",
-        "raw",
-        "reference",
-    }
-    return {
-        token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
-        if len(token) >= 3 and token not in stopwords
-    }
-
-
-def _token_overlap(candidate: set[str], reference: set[str]) -> float:
-    if not candidate:
-        return 0.0
-    return len(candidate & reference) / len(candidate)
 
 
 def _label_range(labels: list[int]) -> str:
