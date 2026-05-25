@@ -296,22 +296,41 @@ def _likely_split_labels(
         following = structured_by_label.get(label + 1)
         if not current or not following:
             continue
-        visible_text = _compact(visible_item.text)
-        current_text = _reference_fingerprint(current)
-        following_text = _reference_fingerprint(following)
-        if current_text and following_text and current_text in visible_text and following_text in visible_text:
+        visible_tokens = _content_tokens(visible_item.text)
+        current_overlap = _token_overlap(_content_tokens(_reference_text(current)), visible_tokens)
+        following_overlap = _token_overlap(_content_tokens(_reference_text(following)), visible_tokens)
+        if current_overlap >= 0.25 and following_overlap >= 0.45:
             likely.add(label)
     return sorted(likely)
 
 
-def _reference_fingerprint(item: StructuredReference) -> str:
-    text = item.raw_reference or item.title or ""
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return "".join(words[:8])
+def _reference_text(item: StructuredReference) -> str:
+    return item.raw_reference or item.title or ""
 
 
-def _compact(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", text.lower())
+def _content_tokens(text: str) -> set[str]:
+    stopwords = {
+        "and",
+        "the",
+        "for",
+        "with",
+        "this",
+        "that",
+        "see",
+        "raw",
+        "reference",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) >= 3 and token not in stopwords
+    }
+
+
+def _token_overlap(candidate: set[str], reference: set[str]) -> float:
+    if not candidate:
+        return 0.0
+    return len(candidate & reference) / len(candidate)
 
 
 def _label_range(labels: list[int]) -> str:
