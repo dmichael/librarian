@@ -296,6 +296,8 @@ def _likely_split_labels(
         following = structured_by_label.get(label + 1)
         if not current or not following:
             continue
+        if len(_content_tokens(visible_item.text)) < 12:
+            continue
         visible_tokens = _content_tokens(visible_item.text)
         current_overlap = _token_overlap(_content_tokens(_reference_text(current)), visible_tokens)
         following_overlap = _token_overlap(_content_tokens(_reference_text(following)), visible_tokens)
