@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
-from librarian.files import find_content_json
+from librarian.files import marker_content_json
 
 
 def _html_to_text(html: str) -> str:
@@ -42,7 +42,7 @@ def _load_book_json(book_id: int, config: dict = None) -> dict | None:
         config = load_config()
     book_dir = expand_path(config["output_path"]) / str(book_id)
 
-    content_file = find_content_json(book_dir)
+    content_file = marker_content_json(book_dir)
     if not content_file:
         return None
 
@@ -216,7 +216,7 @@ def list_books(config: dict = None) -> list[dict]:
     page_counts = {}
     for book_dir in output_path.iterdir():
         if book_dir.is_dir() and book_dir.name.isdigit():
-            content_file = find_content_json(book_dir)
+            content_file = marker_content_json(book_dir)
             if content_file:
                 book_id = int(book_dir.name)
                 book_ids.append(book_id)

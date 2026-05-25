@@ -350,7 +350,8 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
     """Background worker for book extraction.
 
     Routing:
-      - PDF  → Spark marker service over HTTP (librarian.spark_extract)
+      - PDF  → librarian.extract.extract_pdf (runs marker + pdftext + grobid,
+               then extraction QA and references domain builder)
       - EPUB → local ebooklib-based extractor (librarian.epub_extract)
 
     Modal cloud extraction lives in librarian.cloud_extract and is no
@@ -366,23 +367,15 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
         file_size_mb = source.stat().st_size / (1024 * 1024)
 
         if ext == ".pdf":
-            from librarian.spark_extract import extract_pdf_via_spark, get_spark_url
+            from librarian.extract import extract_pdf
 
             _update_book_status(
                 book_id, "extracting",
-                f"POSTing {source.name} ({file_size_mb:.1f} MB) to Spark marker ({get_spark_url()})...",
+                f"Running PDF extractors on {source.name} ({file_size_mb:.1f} MB)...",
             )
             t0 = time.monotonic()
-            ok = extract_pdf_via_spark(source, book_output)
+            extract_pdf(source, book_output)
             extraction_duration = time.monotonic() - t0
-
-            if not ok:
-                _update_book_status(
-                    book_id, "failed",
-                    "Spark extraction failed (see librarian + marker container logs)",
-                    extraction_duration_s=extraction_duration,
-                )
-                return
 
         elif ext == ".epub":
             from librarian.epub_extract import extract_epub
@@ -1677,10 +1670,10 @@ def suggest_tags(book_id: int) -> dict:
             parts.extend(book.authors)
 
         # Read first ~2000 tokens from extracted markdown
-        from librarian.files import find_markdown
+        from librarian.files import marker_markdown
 
         output_path = expand_path(config["output_path"])
-        md_file = find_markdown(output_path / str(book_id))
+        md_file = marker_markdown(output_path / str(book_id))
         if md_file and md_file.exists():
             text = md_file.read_text(errors="replace")[:8000]  # ~2000 tokens
             parts.append(text)

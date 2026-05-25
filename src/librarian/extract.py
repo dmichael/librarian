@@ -21,7 +21,7 @@ from xml.etree import ElementTree as ET
 import markdownify
 
 from librarian.config import expand_path, load_config
-from librarian.files import find_content_json, marker_dir
+from librarian.files import marker_content_json, marker_dir
 from librarian import calibre
 
 TOOL_VERSION = "marker-0.1.0"  # Update when extraction tools change
@@ -143,7 +143,7 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
     book_id = book["id"]
     book_dir = output_dir / str(book_id)
 
-    if find_content_json(book_dir) is None:
+    if marker_content_json(book_dir) is None:
         return True
 
     stored_hash = book.get("*source_hash")
@@ -153,74 +153,50 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
     return compute_file_hash(source_file) != stored_hash
 
 
-def _chunks_to_markdown(chunks_path: Path) -> str:
-    """Convert marker chunks output to markdown.
+def extract_pdf(source: Path, output_dir: Path) -> None:
+    """Run every PDF extractor over source, then QA + domain builders.
 
-    The chunks format is a flat list of blocks, each with 'html' content.
-    We convert HTML to markdown using markdownify.
+    Extractors (each writes raw/<name>/):
+      - marker    raw/marker/{document.json, document.md, document.html, ...}
+      - pdftext   raw/pdftext/layout.txt
+      - grobid    raw/grobid/references.tei.xml
 
-    Args:
-        chunks_path: Path to marker chunks JSON output
+    Then:
+      - extraction QA   review/{extraction_qa.md, equation_diffs.json, artifacts.json}
+      - references      clean/references.csl.json
 
-    Returns:
-        Markdown string
+    Raises on any failure. The per-book / per-batch policy on what to do
+    with a failed extraction lives in main(), not here.
     """
-    import json
+    from librarian.extraction_qa import write_extraction_qa
+    from librarian.extractors import grobid, marker, pdftext
+    from librarian.references import build_references
 
-    with open(chunks_path) as f:
-        data = json.load(f)
+    marker.extract(source, output_dir, backend="spark")
+    pdftext.extract(source, output_dir)
+    grobid_url = grobid.resolve_base_url(None)
+    print(f"  Extracting references via GROBID ({grobid_url})...", flush=True)
+    grobid.extract(source, output_dir, base_url=grobid_url)
 
-    lines = []
+    qa = write_extraction_qa(source, output_dir)
+    print(
+        f"  Wrote extraction QA report ({qa.findings} findings) to {qa.review_dir}",
+        flush=True,
+    )
 
-    # Chunks format is a flat list of blocks (key may be "chunks" or "blocks")
-    chunks = data if isinstance(data, list) else data.get("chunks", data.get("blocks", []))
-
-    for chunk in chunks:
-        if isinstance(chunk, str):
-            lines.append(chunk)
-        elif isinstance(chunk, dict):
-            # Each chunk has 'html' with the complete rendered content
-            if "html" in chunk:
-                md = markdownify.markdownify(chunk["html"], heading_style="ATX")
-                lines.append(md.strip())
-            elif "text" in chunk:
-                lines.append(chunk["text"])
-            elif "content" in chunk:
-                lines.append(chunk["content"])
-
-    return "\n\n".join(lines)
+    refs = build_references(output_dir)
+    print(f"  Wrote {refs.count} references to {refs.csl_json_path}", flush=True)
 
 
-def extract_pdf(source: Path, output_dir: Path) -> bool:
-    """Extract PDF to chunks JSON via the Spark marker HTTP service.
-
-    Produces:
-    - raw/marker/document.json: Content blocks
-    - raw/marker/metadata.json: Document metadata
-    - raw/marker/document.md: Markdown for human reading
-
-    Per-book dispatch only happens for the --spark path; the --cloud
-    (Modal) path runs as a separate batch in main() before per-book
-    iteration starts.
-    """
-    from librarian.spark_extract import extract_pdf_via_spark
-
-    if not extract_pdf_via_spark(source, output_dir):
-        return False
-
-    return True
-
-
-def extract_epub(source: Path, output_dir: Path) -> bool:
-    """Extract EPUB to markdown by parsing XHTML content."""
+def extract_epub(source: Path, output_dir: Path) -> None:
+    """Extract EPUB to markdown by parsing XHTML content. Raises on any failure."""
     raw_dir = marker_dir(output_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
     output_file = raw_dir / "document.md"
     chapters_dir = output_dir / "chapters"
     chapters_dir.mkdir(exist_ok=True)
 
-    try:
-        with zipfile.ZipFile(source, 'r') as epub:
+    with zipfile.ZipFile(source, 'r') as epub:
             # Find the OPF file (contains spine/reading order)
             container = epub.read('META-INF/container.xml')
             container_tree = ET.fromstring(container)
@@ -280,15 +256,9 @@ def extract_epub(source: Path, output_dir: Path) -> bool:
                     chapter_file = chapters_dir / f"{i:03d}.md"
                     chapter_file.write_text(md_content)
                 except KeyError:
-                    continue  # Skip missing files
+                    continue  # Skip missing chapter files inside an otherwise valid EPUB
 
-            # Write full content
             output_file.write_text('\n\n---\n\n'.join(full_content))
-            return True
-
-    except (zipfile.BadZipFile, ET.ParseError, KeyError) as e:
-        print(f"EPUB extraction failed: {e}", file=sys.stderr)
-        return False
 
 
 def extract_book(
@@ -296,8 +266,8 @@ def extract_book(
     source_file: Path,
     output_dir: Path,
     needs_conversion: bool = False,
-) -> bool:
-    """Extract a single book to markdown.
+) -> None:
+    """Extract a single book to markdown. Raises on any failure.
 
     PDF extraction is delegated to the Spark marker HTTP service. EPUB
     parsing remains local. Cloud (Modal) extraction is handled in main()
@@ -309,22 +279,20 @@ def extract_book(
 
     suffix = source_file.suffix.lower()
 
-    # Handle Kindle formats by converting to EPUB first
     if needs_conversion or suffix in KINDLE_FORMATS:
         print(f"  Converting {suffix} to EPUB...", flush=True)
         epub_path = convert_to_epub(source_file, book_output, book_id)
         if epub_path is None:
-            return False
+            raise RuntimeError(f"ebook-convert failed for {source_file}")
         source_file = epub_path
         suffix = ".epub"
 
     if suffix == ".pdf":
-        return extract_pdf(source_file, book_output)
+        extract_pdf(source_file, book_output)
     elif suffix == ".epub":
-        return extract_epub(source_file, book_output)
+        extract_epub(source_file, book_output)
     else:
-        print(f"Unsupported format: {suffix}", file=sys.stderr)
-        return False
+        raise ValueError(f"Unsupported format: {suffix}")
 
 
 def update_calibre_extraction_state(library_path: Path, book_id: int, source_hash: str):
@@ -484,14 +452,23 @@ def main():
 
         print(f"[{book_id}] {title}: Extracting...", flush=True)
 
-        if extract_book(book, source_file, output_path, needs_conversion):
-            source_hash = compute_file_hash(source_file)
-            update_calibre_extraction_state(library_path, book_id, source_hash)
-            print(f"[{book_id}] {title}: Done", flush=True)
-            succeeded += 1
-        else:
-            print(f"[{book_id}] {title}: Extraction failed", file=sys.stderr)
+        # Batch-level policy: a single book's failure is logged and counted
+        # but does not abort the run. This is the *only* place in the
+        # extraction pipeline where exceptions are caught — every layer
+        # below this raises on failure.
+        try:
+            extract_book(book, source_file, output_path, needs_conversion)
+        except Exception as e:
+            import traceback
+            print(f"[{book_id}] {title}: Extraction failed: {e}", file=sys.stderr)
+            traceback.print_exc()
             failed += 1
+            continue
+
+        source_hash = compute_file_hash(source_file)
+        update_calibre_extraction_state(library_path, book_id, source_hash)
+        print(f"[{book_id}] {title}: Done", flush=True)
+        succeeded += 1
 
     if not args["dry_run"]:
         print(f"\nExtraction complete: {succeeded} succeeded, {failed} failed")

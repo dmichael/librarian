@@ -1,16 +1,23 @@
-"""Focused bibliography extraction and normalization."""
+"""References domain builder.
+
+Reads the TEI XML written by the GROBID extractor (raw/grobid/references.tei.xml)
+and produces the clean canonical bibliography (clean/references.csl.json) in
+CSL-JSON. The HTTP call to GROBID lives in librarian.extractors.grobid; this
+module owns only the TEI→CSL conversion and the clean output.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import re
+import sys
 from pathlib import Path
-from typing import Any
 from xml.etree import ElementTree as ET
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
+
+from librarian.extractors import grobid
 
 
 TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
@@ -60,72 +67,23 @@ class ReferencesResult(BaseModel):
     count: int
 
 
-def resolve_grobid_base_url(explicit: str | None) -> str:
-    """Resolve the GROBID service root URL."""
-    if explicit:
-        return explicit.rstrip("/")
-    if base_url := os.getenv("GROBID_BASE_URL"):
-        return base_url.rstrip("/")
-    raise ValueError("Set GROBID_BASE_URL to the GROBID service root, e.g. http://host:8070")
+def build_references(book_dir: Path) -> ReferencesResult:
+    """Convert raw/grobid/references.tei.xml → clean/references.csl.json.
 
-
-def extract_references_with_grobid(
-    source_pdf: Path,
-    book_dir: Path,
-    *,
-    grobid_base_url: str,
-    timeout: float = 180.0,
-    consolidate_citations: str = "0",
-) -> ReferencesResult:
-    """Extract references from a PDF via GROBID and write canonical CSL-JSON."""
-    tei = call_grobid_process_references(
-        source_pdf,
-        grobid_base_url=grobid_base_url,
-        timeout=timeout,
-        consolidate_citations=consolidate_citations,
-    )
-    return write_references_artifacts(book_dir, tei)
-
-
-def call_grobid_process_references(
-    source_pdf: Path,
-    *,
-    grobid_base_url: str,
-    timeout: float,
-    consolidate_citations: str,
-) -> str:
-    if not source_pdf.exists():
-        raise FileNotFoundError(source_pdf)
-
-    with source_pdf.open("rb") as pdf:
-        response = httpx.post(
-            f"{grobid_base_url.rstrip('/')}/api/processReferences",
-            headers={"Accept": "application/xml"},
-            files={"input": (source_pdf.name, pdf, "application/pdf")},
-            data={
-                "includeRawCitations": "1",
-                "consolidateCitations": consolidate_citations,
-            },
-            timeout=timeout,
+    Raises FileNotFoundError if the GROBID extractor hasn't run.
+    """
+    raw_path = book_dir / grobid.ARTIFACT_REL_PATH
+    if not raw_path.exists():
+        raise FileNotFoundError(
+            f"GROBID raw TEI not found at {raw_path}; run the grobid extractor first"
         )
 
-    if response.status_code == 204:
-        return "<listBibl xmlns=\"http://www.tei-c.org/ns/1.0\" />"
-    response.raise_for_status()
-    return response.text
-
-
-def write_references_artifacts(book_dir: Path, tei_xml: str) -> ReferencesResult:
-    raw_dir = book_dir / "raw" / "grobid"
-    clean_dir = book_dir / "clean"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    clean_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_path = raw_dir / "references.tei.xml"
-    csl_path = clean_dir / "references.csl.json"
-
+    tei_xml = raw_path.read_text()
     references = tei_references_to_csl(tei_xml)
-    raw_path.write_text(tei_xml)
+
+    clean_dir = book_dir / "clean"
+    clean_dir.mkdir(parents=True, exist_ok=True)
+    csl_path = clean_dir / "references.csl.json"
     csl_path.write_text(
         json.dumps(
             [item.model_dump(by_alias=True, exclude_none=True) for item in references],
@@ -282,4 +240,45 @@ def _text_or_none(node: ET.Element | None) -> str | None:
 
 def _strip_ns(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Build clean/references.csl.json from a PDF. Runs the GROBID "
+        "extractor (raw/grobid/) then the references domain builder."
+    )
+    parser.add_argument("source_pdf", type=Path, help="Source PDF")
+    parser.add_argument("book_dir", type=Path, help="converted/<book_id> directory")
+    parser.add_argument(
+        "--grobid-url",
+        default=None,
+        help="GROBID service root URL. Defaults to GROBID_BASE_URL.",
+    )
+    parser.add_argument("--timeout", type=float, default=grobid.DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--consolidate-citations",
+        choices=["0", "1", "2"],
+        default=grobid.DEFAULT_CONSOLIDATE_CITATIONS,
+        help="GROBID citation consolidation mode.",
+    )
+    args = parser.parse_args()
+
+    try:
+        grobid.extract(
+            args.source_pdf,
+            args.book_dir,
+            base_url=args.grobid_url,
+            timeout=args.timeout,
+            consolidate_citations=args.consolidate_citations,
+        )
+        result = build_references(args.book_dir)
+    except Exception as exc:
+        print(f"reference build failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    print(json.dumps(result.model_dump(), indent=2))
+
+
+if __name__ == "__main__":
+    main()
 

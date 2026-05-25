@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
-from librarian.files import find_content_json
+from librarian.files import marker_content_json
 from librarian.metadata import compare_authors, lookup_isbn
 
 
@@ -34,7 +34,7 @@ def _load_book_json(book_id: int, config: dict) -> dict | None:
     """Load the marker content JSON for a book."""
     book_dir = expand_path(config["output_path"]) / str(book_id)
 
-    content_file = find_content_json(book_dir)
+    content_file = marker_content_json(book_dir)
     if not content_file:
         return None
 
@@ -478,7 +478,7 @@ def list_books_needing_enrichment(config: dict = None) -> list[dict]:
     books = []
     for book_dir in output_path.iterdir():
         if book_dir.is_dir() and book_dir.name.isdigit():
-            if find_content_json(book_dir):
+            if marker_content_json(book_dir):
                 book_id = int(book_dir.name)
                 needs, reasons = needs_enrichment(book_id, config)
                 if needs:

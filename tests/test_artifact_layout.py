@@ -1,13 +1,13 @@
 import json
 from pathlib import Path
 
-from librarian.spark_extract import extract_pdf_via_spark
+from librarian.extractors import marker
 from librarian.extraction_qa import write_extraction_qa
 from librarian.files import (
-    find_content_json,
-    find_html,
-    find_markdown,
-    find_meta_json,
+    marker_content_json,
+    marker_html,
+    marker_markdown,
+    marker_meta_json,
     marker_dir,
 )
 
@@ -23,10 +23,10 @@ def test_marker_artifact_discovery_uses_raw_marker_dir(tmp_path: Path):
     (raw_marker / "document.html").write_text("<html></html>")
 
     assert marker_dir(book_dir) == raw_marker
-    assert find_content_json(book_dir) == raw_marker / "document.json"
-    assert find_markdown(book_dir) == raw_marker / "document.md"
-    assert find_meta_json(book_dir) == raw_marker / "metadata.json"
-    assert find_html(book_dir) == raw_marker / "document.html"
+    assert marker_content_json(book_dir) == raw_marker / "document.json"
+    assert marker_markdown(book_dir) == raw_marker / "document.md"
+    assert marker_meta_json(book_dir) == raw_marker / "metadata.json"
+    assert marker_html(book_dir) == raw_marker / "document.html"
 
 
 def test_root_marker_artifacts_are_not_canonical(tmp_path: Path):
@@ -37,9 +37,9 @@ def test_root_marker_artifacts_are_not_canonical(tmp_path: Path):
     (book_dir / "2.md").write_text("legacy")
     (book_dir / "2_meta.json").write_text("{}")
 
-    assert find_content_json(book_dir) is None
-    assert find_markdown(book_dir) is None
-    assert find_meta_json(book_dir) is None
+    assert marker_content_json(book_dir) is None
+    assert marker_markdown(book_dir) is None
+    assert marker_meta_json(book_dir) is None
 
 
 def test_extraction_qa_manifest_uses_new_artifact_layout(tmp_path: Path, monkeypatch):
@@ -69,21 +69,16 @@ def test_extraction_qa_manifest_uses_new_artifact_layout(tmp_path: Path, monkeyp
     source = tmp_path / "source.pdf"
     source.write_bytes(b"%PDF")
 
-    def fake_run(self, source_path, output_dir):
+    def fake_extract(source_path, output_dir):
         pdftext_dir = output_dir / "raw" / "pdftext"
         pdftext_dir.mkdir(parents=True)
-        path = pdftext_dir / "layout.txt"
-        path.write_text("K 苷 Ko 1 B cos关f共t兲 1 fj 兴 .               (10)")
-        from librarian.extractors import ExtractorResult
+        (pdftext_dir / "layout.txt").write_text("K = K_o + B cos[phi(t) + phi_j] .  (10)")
 
-        return ExtractorResult(name="pdftext", success=True, output_path=str(path))
-
-    monkeypatch.setattr("librarian.extractors.PdfTextExtractor.run", fake_run)
+    monkeypatch.setattr("librarian.extractors.pdftext.extract", fake_extract)
 
     result = write_extraction_qa(source, book_dir)
     manifest = json.loads((book_dir / "review" / "artifacts.json").read_text())
 
-    assert result.success
     assert result.raw_outputs == {"pdftext": "raw/pdftext/layout.txt"}
     artifact_paths = {item["role"]: item["path"] for item in manifest["artifacts"]}
     assert artifact_paths["marker_json"] == "raw/marker/document.json"
@@ -150,10 +145,9 @@ def test_spark_extraction_writes_marker_artifacts_under_raw_marker(tmp_path: Pat
             )
         raise AssertionError(f"Unexpected output format: {data['output_format']}")
 
-    monkeypatch.setattr("librarian.spark_extract.httpx.post", fake_post)
-    monkeypatch.setattr("librarian.spark_extract._write_qa_artifacts", lambda source, output: None)
+    monkeypatch.setattr("librarian.extractors.marker.httpx.post", fake_post)
 
-    assert extract_pdf_via_spark(source, book_dir, write_html=True)
+    marker.extract(source, book_dir, backend="spark", write_html=True)
 
     raw_marker = marker_dir(book_dir)
     assert (raw_marker / "document.json").exists()

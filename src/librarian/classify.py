@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 
 from librarian.config import expand_path, load_config
-from librarian.files import find_markdown
+from librarian.files import marker_markdown
 
 
 def sample_book_content(book_dir: Path, sample_size: int = 5000) -> str:
     """Get a representative sample of book content."""
-    md_file = find_markdown(book_dir)
+    md_file = marker_markdown(book_dir)
     if not md_file:
         return ""
 

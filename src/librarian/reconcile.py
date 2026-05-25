@@ -1,16 +1,24 @@
-"""LLM reconciliation for extracted document artifacts."""
+"""LLM reconciliation for the equations domain.
+
+This module reconciles disagreements between Marker (LaTeX form) and pdftotext
+(raw glyphs) for numbered equations. It is *not* a general reconciler — other
+domains use pick-a-winner logic and do not need an LLM. See
+specs/multi-extractor-domains/requirements.md for the broader design.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from librarian.files import find_markdown
+from librarian.files import marker_markdown
 
 
 DEFAULT_MODEL = "qwen3:14b"
@@ -37,7 +45,7 @@ RECONCILIATION_SCHEMA: dict[str, Any] = {
                     "evidence",
                 ],
                 "properties": {
-                    "target_type": {"type": "string", "enum": ["equation", "text"]},
+                    "target_type": {"type": "string", "enum": ["equation"]},
                     "target_id": {"type": "string"},
                     "operation": {"type": "string", "enum": ["replace"]},
                     "before": {"type": "string"},
@@ -77,11 +85,11 @@ class AppliedPatch(ReconciliationPatch):
 
 
 def build_reconciliation_packet(book_dir: Path) -> dict[str, Any]:
-    """Build a compact evidence packet from raw and review artifacts."""
+    """Build a compact evidence packet of contested equations for the LLM."""
     equation_diffs = _load_json(book_dir / "review" / "equation_diffs.json", default=[])
     findings = [item for item in equation_diffs if item.get("status") != "ok"]
 
-    marker_md = find_markdown(book_dir)
+    marker_md = marker_markdown(book_dir)
     marker_text = marker_md.read_text(errors="replace") if marker_md else ""
     for item in findings:
         number = str(item.get("number", ""))
@@ -89,34 +97,34 @@ def build_reconciliation_packet(book_dir: Path) -> dict[str, Any]:
             item["raw_markdown_candidates"] = _raw_equation_candidates(marker_text, number)
 
     return {
+        "domain": "equations",
         "book_dir": str(book_dir),
-        "canonical_raw_markdown": "raw/marker/document.md",
-        "review_artifacts": {
+        "marker_markdown_path": "raw/marker/document.md",
+        "evidence_paths": {
             "equation_diffs": "review/equation_diffs.json",
             "extraction_qa": "review/extraction_qa.md",
         },
-        "policy": {
-            "raw_is_read_only": True,
-            "clean_output": "clean/document.md",
-            "patch_record": "clean/corrections.json",
+        "output_paths": {
+            "patched_markdown": "clean/document.md",
+            "corrections": "clean/corrections.json",
         },
-        "raw_markdown_excerpt": _excerpt_text(marker_text, max_chars=12000),
         "findings": findings,
     }
 
 
 def reconciliation_prompt(packet: dict[str, Any]) -> list[dict[str, str]]:
-    """Create chat messages for a focused reconciliation pass."""
+    """Create chat messages for a contested-equation reconciliation pass."""
     system = (
-        "You reconcile academic PDF extraction evidence. "
-        "Use only the supplied artifacts. Do not invent missing content. "
+        "You reconcile contested numbered equations extracted from a PDF by two "
+        "different tools: Marker (LaTeX form) and pdftotext (raw glyphs). "
+        "Use only the supplied evidence. Do not invent content. "
         "Return JSON only. Prefer no patch over a speculative patch."
     )
     user = (
-        "Review the extraction findings and propose deterministic patches for the clean "
-        "document. Each patch must replace exact Markdown text from the raw Marker output "
-        "with corrected text supported by the evidence. If the evidence is insufficient, "
-        "return an empty patches array.\n\n"
+        "Review the contested equations and propose deterministic patches that fix the "
+        "Marker LaTeX where pdftotext's raw glyphs make the correct symbol unambiguous. "
+        "Each patch must replace exact Markdown text from the raw Marker output with "
+        "corrected text. If the evidence is insufficient, return an empty patches array.\n\n"
         f"Evidence packet:\n{json.dumps(packet, indent=2)}"
     )
     return [
@@ -182,7 +190,7 @@ def write_reconciliation_proposal(book_dir: Path, proposal: dict[str, Any]) -> P
 
 def apply_reconciliation(book_dir: Path, proposal: dict[str, Any]) -> list[AppliedPatch]:
     """Apply proposed replace patches into clean/document.md and record corrections."""
-    source = find_markdown(book_dir)
+    source = marker_markdown(book_dir)
     if source is None:
         raise FileNotFoundError(f"Marker Markdown not found under {book_dir / 'raw' / 'marker'}")
 
@@ -268,17 +276,6 @@ def _load_json(path: Path, *, default: Any) -> Any:
     return json.loads(path.read_text())
 
 
-def _read_excerpt(path: Path, *, max_chars: int) -> str:
-    text = path.read_text(errors="replace")
-    return _excerpt_text(text, max_chars=max_chars)
-
-
-def _excerpt_text(text: str, *, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "\n\n[TRUNCATED]"
-
-
 def _raw_equation_candidates(markdown: str, number: str) -> list[str]:
     tag = rf"\tag{{{number}}}"
     paren = f"({number})"
@@ -310,7 +307,52 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     return parsed
 
 
-if __name__ == "__main__":
-    from librarian.reconcile_cli import main
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Reconcile contested equations with an LLM")
+    parser.add_argument("book_dir", type=Path, help="converted/<book_id> directory")
+    parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", DEFAULT_MODEL))
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="OpenAI-compatible /v1 endpoint. Defaults to OPENAI_BASE_URL.",
+    )
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", "ollama"))
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--json-mode",
+        choices=["object", "schema", "none"],
+        default=os.getenv("LIBRARIAN_RECONCILE_JSON_MODE", "object"),
+        help="Use object for broad Ollama compatibility; schema for stricter OpenAI-compatible servers.",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write clean/document.md and clean/corrections.json",
+    )
+    parser.add_argument(
+        "--packet-only",
+        action="store_true",
+        help="Only write review/reconciliation_packet.json; do not call the LLM.",
+    )
+    args = parser.parse_args()
 
+    try:
+        result = reconcile_book(
+            args.book_dir,
+            base_url="" if args.packet_only else resolve_base_url(args.base_url),
+            api_key=args.api_key,
+            model=args.model,
+            timeout=args.timeout,
+            json_mode=args.json_mode,
+            apply=args.apply,
+            packet_only=args.packet_only,
+        )
+    except Exception as exc:
+        print(f"reconciliation failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
     main()

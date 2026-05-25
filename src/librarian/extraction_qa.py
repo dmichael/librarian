@@ -14,19 +14,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from librarian.equations import extract_equations_from_blocks
-from librarian.extractors import ExtractorResult, PdfTextExtractor
-from librarian.files import find_content_json, marker_dir
-
-
-# Some old PDFs use custom symbolic fonts. pdftotext can decode those glyphs as
-# unrelated Unicode codepoints, including CJK punctuation/characters. Keep the
-# observed artifacts named here so the equation-line heuristic is explainable.
-PDFTEXT_MOJIBAKE_EQUALS = "\u82f7"
-PDFTEXT_MOJIBAKE_MATH_MARKERS = set(
-    "=+-/^()[]{}"
-    + PDFTEXT_MOJIBAKE_EQUALS
-    + "\u5173\u517e\u5171\u5172\u1828\u2d31\u2bdd"
-)
+from librarian.extractors import pdftext
+from librarian.files import marker_content_json, marker_dir
 
 
 @dataclass
@@ -47,60 +36,36 @@ class EquationComparison:
 
 @dataclass
 class ExtractionQAResult:
-    success: bool
     marker_equations: int
     pdftext_equations: int
     findings: int
     review_dir: str
-    raw_outputs: dict[str, str | None]
-    error: str | None = None
+    raw_outputs: dict[str, str]
 
 
 def write_extraction_qa(source: Path, output_dir: Path) -> ExtractionQAResult:
-    """Write baseline extraction QA artifacts for a converted PDF.
+    """Write extraction QA artifacts comparing Marker and pdftotext.
 
     Artifacts:
       - raw/pdftext/layout.txt
       - review/equation_diffs.json
       - review/extraction_qa.md
+      - review/artifacts.json
 
-    This function is best-effort by design. It returns a result object instead
-    of raising so raw extraction can still produce provenance artifacts even
-    when a QA backend fails.
+    Raises if Marker JSON is missing or the pdftext extractor fails.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     review_dir = output_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
 
-    marker_json = find_content_json(output_dir)
+    marker_json = marker_content_json(output_dir)
     if marker_json is None:
-        result = ExtractionQAResult(
-            success=False,
-            marker_equations=0,
-            pdftext_equations=0,
-            findings=0,
-            review_dir=str(review_dir),
-            raw_outputs={},
-            error=f"Marker JSON not found under {marker_dir(output_dir)}",
-        )
-        _write_review_markdown(review_dir / "extraction_qa.md", [], result)
-        return result
+        raise FileNotFoundError(f"Marker JSON not found under {marker_dir(output_dir)}")
 
-    pdftext = write_pdftext_baseline(source, output_dir)
-    if not pdftext.success or not pdftext.output_path:
-        result = ExtractionQAResult(
-            success=False,
-            marker_equations=_count_marker_equations(marker_json),
-            pdftext_equations=0,
-            findings=0,
-            review_dir=str(review_dir),
-            raw_outputs={pdftext.name: _artifact_ref(pdftext.output_path, output_dir)},
-            error=pdftext.error,
-        )
-        _write_review_markdown(review_dir / "extraction_qa.md", [], result)
-        return result
+    pdftext.extract(source, output_dir)
+    pdftext_path = output_dir / pdftext.ARTIFACT_REL_PATH
 
-    comparisons = compare_marker_to_pdftext(marker_json, Path(pdftext.output_path))
+    comparisons = compare_marker_to_pdftext(marker_json, pdftext_path)
     findings = sum(1 for item in comparisons if item.status != "ok")
 
     (review_dir / "equation_diffs.json").write_text(
@@ -108,21 +73,15 @@ def write_extraction_qa(source: Path, output_dir: Path) -> ExtractionQAResult:
     )
 
     result = ExtractionQAResult(
-        success=True,
         marker_equations=sum(1 for item in comparisons if item.marker is not None),
         pdftext_equations=sum(1 for item in comparisons if item.pdftext is not None),
         findings=findings,
         review_dir=str(review_dir),
-        raw_outputs={pdftext.name: _artifact_ref(pdftext.output_path, output_dir)},
+        raw_outputs={pdftext.NAME: str(pdftext.ARTIFACT_REL_PATH)},
     )
     _write_review_markdown(review_dir / "extraction_qa.md", comparisons, result)
     _write_artifact_manifest(output_dir, result)
     return result
-
-
-def write_pdftext_baseline(source: Path, output_dir: Path) -> ExtractorResult:
-    """Extract embedded PDF text with pdftotext -layout."""
-    return PdfTextExtractor().run(source, output_dir)
 
 
 def compare_marker_to_pdftext(
@@ -150,10 +109,9 @@ def compare_marker_to_pdftext(
         elif pdftext is None:
             status = "missing_pdftext"
             notes.append("Numbered equation appears in Marker JSON but not pdftotext.")
-        else:
-            notes.extend(_symbol_disagreement_notes(marker, pdftext))
-            if notes:
-                status = "review"
+        elif _normalize(marker) != _normalize(pdftext):
+            status = "review"
+            notes.append("Marker and pdftotext disagree; see raw artifacts for LLM reconciliation.")
 
         comparisons.append(
             EquationComparison(
@@ -175,9 +133,6 @@ def extract_numbered_equations_from_pdftext(text: str) -> list[NumberedEquation]
     equation_number = re.compile(r"\((?P<number>\d{1,3})\)")
 
     for idx, line in enumerate(lines):
-        if _is_pdftext_noise_line(line):
-            continue
-
         for match in equation_number.finditer(line):
             body = line[: match.start()].strip()
             if not _looks_like_equation_line(body):
@@ -185,7 +140,7 @@ def extract_numbered_equations_from_pdftext(text: str) -> list[NumberedEquation]
 
             number = match.group("number")
             context_lines = []
-            if "=" not in body and PDFTEXT_MOJIBAKE_EQUALS not in body:
+            if "=" not in body:
                 for prev_idx in range(max(0, idx - 2), idx):
                     prev = lines[prev_idx].strip()
                     if _looks_like_equation_line(prev):
@@ -216,10 +171,6 @@ def _marker_equations_by_number(marker_json_path: Path) -> dict[str, str]:
     return by_number
 
 
-def _count_marker_equations(marker_json_path: Path) -> int:
-    return len(_marker_equations_by_number(marker_json_path))
-
-
 def _pdftext_equations_by_number(text: str) -> dict[str, str]:
     return {equation.number: equation.text for equation in extract_numbered_equations_from_pdftext(text)}
 
@@ -227,52 +178,17 @@ def _pdftext_equations_by_number(text: str) -> dict[str, str]:
 def _looks_like_equation_line(line: str) -> bool:
     if not line:
         return False
-    if "=" in line or PDFTEXT_MOJIBAKE_EQUALS in line:
+    if "=" in line:
         return True
-
     if len(line.split()) > 12:
         return False
-
-    marker_count = sum(1 for char in line if char in PDFTEXT_MOJIBAKE_MATH_MARKERS)
-    if marker_count >= 2:
-        return True
-
     compact = re.sub(r"\s+", "", line)
-    return bool(
-        re.search(
-            rf"[A-Za-z][A-Za-z0-9]?[={PDFTEXT_MOJIBAKE_EQUALS}]",
-            compact,
-        )
-    )
+    return bool(re.search(r"[A-Za-z][A-Za-z0-9]?=", compact))
 
 
-def _is_pdftext_noise_line(line: str) -> bool:
-    noise_markers = [
-        "0031-9007",
-        "PhysRevLett",
-        "PACS numbers",
-        "The American Physical Society",
-    ]
-    return any(marker in line for marker in noise_markers)
-
-
-def _symbol_disagreement_notes(marker: str, pdftext: str) -> list[str]:
-    """Detect high-signal symbol disagreements without pretending full equivalence."""
-    notes = []
-    marker_phase = set(re.findall(r"\\phi_\{?([A-Za-z0-9]+)\}?", marker))
-    pdftext_phase = set(re.findall(r"\bf([A-Za-z0-9])\b", pdftext))
-
-    if marker_phase and pdftext_phase:
-        marker_symbols = {f"phi_{value}" for value in marker_phase}
-        pdftext_symbols = {f"phi_{value}" for value in pdftext_phase}
-        if marker_symbols != pdftext_symbols:
-            notes.append(
-                "Possible phase-symbol disagreement: "
-                f"Marker has {sorted(marker_symbols)}, "
-                f"pdftotext suggests {sorted(pdftext_symbols)}."
-            )
-
-    return notes
+def _normalize(value: str) -> str:
+    """Whitespace-insensitive comparison key for equation strings."""
+    return re.sub(r"\s+", "", value or "")
 
 
 def _write_review_markdown(
@@ -285,16 +201,12 @@ def _write_review_markdown(
         "",
         "## Summary",
         "",
-        f"- Success: {result.success}",
         f"- Marker equations: {result.marker_equations}",
         f"- pdftotext equations: {result.pdftext_equations}",
         f"- Findings needing review: {result.findings}",
     ]
     for name, output_path in sorted(result.raw_outputs.items()):
-        if output_path:
-            lines.append(f"- Raw `{name}` output: `{output_path}`")
-    if result.error:
-        lines.append(f"- Error: {result.error}")
+        lines.append(f"- Raw `{name}` output: `{output_path}`")
 
     lines.extend(
         [
@@ -387,16 +299,6 @@ def _cell(value: str | None, max_len: int = 180) -> str:
     return f"`{value}`"
 
 
-def _artifact_ref(path: str | None, output_dir: Path) -> str | None:
-    if not path:
-        return None
-    artifact_path = Path(path)
-    try:
-        return str(artifact_path.relative_to(output_dir))
-    except ValueError:
-        return str(artifact_path)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Write extraction QA artifacts for a PDF")
     parser.add_argument("source", type=Path, help="Source PDF")
@@ -405,7 +307,6 @@ def main() -> None:
 
     result = write_extraction_qa(args.source, args.output_dir)
     print(json.dumps(asdict(result), indent=2))
-    raise SystemExit(0 if result.success else 1)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,8 @@ def test_build_reconciliation_packet_uses_review_findings(tmp_path: Path):
 
     packet = build_reconciliation_packet(tmp_path)
 
-    assert packet["canonical_raw_markdown"] == "raw/marker/document.md"
+    assert packet["domain"] == "equations"
+    assert packet["marker_markdown_path"] == "raw/marker/document.md"
     assert len(packet["findings"]) == 1
     assert packet["findings"][0]["number"] == "10"
     assert packet["findings"][0]["raw_markdown_candidates"] == [
@@ -167,8 +168,3 @@ def test_openai_compatible_chat_uses_chat_completions_payload(monkeypatch):
     assert captured["json"]["response_format"] == {"type": "json_object"}
 
 
-def test_reconcile_module_keeps_cli_separate():
-    import librarian.reconcile as reconcile
-
-    assert not hasattr(reconcile, "argparse")
-    assert not hasattr(reconcile, "main")

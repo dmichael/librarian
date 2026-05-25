@@ -59,7 +59,7 @@ from librarian.metadata_types import (
     serialize_list_metadata as contract_serialize_list_metadata,
     with_block_metadata,
 )
-from librarian.files import find_content_json, find_markdown
+from librarian.files import marker_content_json, marker_markdown
 from librarian import calibre
 from librarian.vectorstore import get_vector_store, get_collection_names
 from librarian.equations import (
@@ -155,7 +155,7 @@ def load_extracted_book(book_dir: Path) -> tuple[str | None, str | None]:
         - augmented_content: LaTeX equations have natural language descriptions
         - raw_content: Original markdown for equation extraction
     """
-    md_file = find_markdown(book_dir)
+    md_file = marker_markdown(book_dir)
     if not md_file:
         return None, None
     raw_content = md_file.read_text()
@@ -175,7 +175,7 @@ def load_extracted_blocks(book_dir: Path) -> list[dict] | None:
     """
     import markdownify
 
-    content_file = find_content_json(book_dir)
+    content_file = marker_content_json(book_dir)
     if not content_file:
         return None
 
