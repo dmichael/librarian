@@ -154,17 +154,14 @@ def needs_extraction(book: dict, source_file: Path, output_dir: Path) -> bool:
 
 
 def extract_pdf(source: Path, output_dir: Path) -> None:
-    """Run every PDF extractor over source, then build per-domain clean outputs.
+    """Run every PDF extractor over source. Each extractor owns its raw/<name>/.
 
-    Extractors (each writes raw/<name>/):
-      - marker    raw/marker/{document.json, document.md, document.html, ...}
-      - grobid    raw/grobid/references.tei.xml
+    Extractors are independent and equal. Each one writes its native artifacts
+    AND its normalized views (when one extractor produces a kind of content,
+    only that extractor knows how to normalize it). No domain layer — the
+    indexer decides which extractor's view to consume.
 
-    Domain builders (read raw/, write clean/):
-      - references   clean/references.csl.json
-
-    Raises on any failure. The per-book / per-batch policy on what to do
-    with a failed extraction lives in main(), not here.
+    Raises on any failure. The batch policy lives in main(), not here.
 
     Config (env vars, hard-required — no fallbacks):
       LIBRARIAN_SPARK_URL    Marker HTTP service root (e.g. http://spark-f80b.local:8001)
@@ -173,7 +170,6 @@ def extract_pdf(source: Path, output_dir: Path) -> None:
     import os
 
     from librarian.extractors import grobid, marker
-    from librarian.references import build_references
 
     spark_url = os.environ.get("LIBRARIAN_SPARK_URL")
     if not spark_url:
@@ -184,10 +180,8 @@ def extract_pdf(source: Path, output_dir: Path) -> None:
 
     marker.extract(source, output_dir, backend="spark", spark_url=spark_url)
     print(f"  Extracting references via GROBID ({grobid_url})...", flush=True)
-    grobid.extract(source, output_dir, base_url=grobid_url)
-
-    refs = build_references(output_dir)
-    print(f"  Wrote {refs.count} references to {refs.csl_json_path}", flush=True)
+    refs = grobid.extract(source, output_dir, base_url=grobid_url)
+    print(f"  Wrote {len(refs)} references to raw/grobid/", flush=True)
 
 
 def extract_epub(source: Path, output_dir: Path) -> None:

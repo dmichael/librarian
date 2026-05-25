@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from librarian.extractors import grobid
-from librarian.references import build_references, tei_references_to_csl
 
 
 SAMPLE_TEI = """\
@@ -50,8 +49,8 @@ SAMPLE_TEI = """\
 """
 
 
-def test_tei_references_to_csl_projects_grobid_tei_to_csl_json():
-    refs = tei_references_to_csl(SAMPLE_TEI)
+def test_tei_to_csl_projects_grobid_tei_to_csl_json():
+    refs = grobid.tei_to_csl(SAMPLE_TEI)
 
     assert len(refs) == 2
     first = refs[0].model_dump(by_alias=True, exclude_none=True)
@@ -70,29 +69,7 @@ def test_tei_references_to_csl_projects_grobid_tei_to_csl_json():
     assert second["page"] == "957-962"
 
 
-def test_build_references_reads_raw_tei_and_writes_clean_csl(tmp_path: Path):
-    raw_dir = tmp_path / "raw" / "grobid"
-    raw_dir.mkdir(parents=True)
-    (raw_dir / "references.tei.xml").write_text(SAMPLE_TEI)
-
-    result = build_references(tmp_path)
-
-    assert result.count == 2
-    csl = json.loads((tmp_path / "clean" / "references.csl.json").read_text())
-    assert csl[0]["id"] == "ref-1"
-    assert csl[1]["id"] == "ref-18"
-
-
-def test_build_references_raises_when_grobid_extractor_has_not_run(tmp_path: Path):
-    try:
-        build_references(tmp_path)
-    except FileNotFoundError as exc:
-        assert "references.tei.xml" in str(exc)
-    else:
-        raise AssertionError("Expected missing raw TEI to raise")
-
-
-def test_grobid_extract_writes_tei_to_raw_grobid(tmp_path: Path, monkeypatch):
+def test_grobid_extract_writes_raw_tei_and_normalized_csl(tmp_path: Path, monkeypatch):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     captured = {}
@@ -113,7 +90,7 @@ def test_grobid_extract_writes_tei_to_raw_grobid(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("librarian.extractors.grobid.httpx.post", fake_post)
 
-    grobid.extract(
+    refs = grobid.extract(
         pdf,
         tmp_path,
         base_url="http://grobid.local:8070",
@@ -121,14 +98,16 @@ def test_grobid_extract_writes_tei_to_raw_grobid(tmp_path: Path, monkeypatch):
         consolidate_citations="2",
     )
 
+    assert len(refs) == 2
     assert (tmp_path / "raw" / "grobid" / "references.tei.xml").read_text() == SAMPLE_TEI
+    csl = json.loads((tmp_path / "raw" / "grobid" / "references.csl.json").read_text())
+    assert csl[0]["id"] == "ref-1"
+    assert csl[1]["id"] == "ref-18"
     assert captured["url"] == "http://grobid.local:8070/api/processReferences"
-    assert captured["headers"] == {"Accept": "application/xml"}
     assert captured["data"] == {"includeRawCitations": "1", "consolidateCitations": "2"}
-    assert captured["timeout"] == 30
 
 
-def test_grobid_extract_204_writes_empty_listbibl(tmp_path: Path, monkeypatch):
+def test_grobid_extract_204_writes_empty_listbibl_and_empty_csl(tmp_path: Path, monkeypatch):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
 
@@ -144,10 +123,8 @@ def test_grobid_extract_204_writes_empty_listbibl(tmp_path: Path, monkeypatch):
         lambda *args, **kwargs: FakeResponse(),
     )
 
-    grobid.extract(pdf, tmp_path, base_url="http://grobid.local:8070", timeout=30)
-    result = build_references(tmp_path)
+    refs = grobid.extract(pdf, tmp_path, base_url="http://grobid.local:8070", timeout=30)
 
-    assert result.count == 0
-    assert json.loads((tmp_path / "clean" / "references.csl.json").read_text()) == []
-
-
+    assert refs == []
+    csl = json.loads((tmp_path / "raw" / "grobid" / "references.csl.json").read_text())
+    assert csl == []
