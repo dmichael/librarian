@@ -11,6 +11,29 @@ Behavior and safety rules live in `AGENTS.md`.
 - Many agent sessions run on a separate dev machine.
 - Confirm host target before running operational commands.
 
+## External services (extraction)
+
+Extraction calls two HTTP services on the DGX Spark (`spark-f80b.local`),
+deployed from the sibling repos `marker-service` and `grobid-service`:
+
+- Marker (PDF/EPUB → chunks): `LIBRARIAN_SPARK_URL=http://spark-f80b.local:8001`
+  (client POSTs `/marker/upload`)
+- GROBID (references/citations/sections): `GROBID_BASE_URL=http://spark-f80b.local:8070`
+
+These must be set in the container's `.env.production`, or `extract_book`
+silently skips both and produces no artifacts. Health: `GET :8070/api/isalive`,
+`GET :8001/docs`.
+
+## Data locality (portability)
+
+The extract → index pipeline runs inside the container and reads/writes
+`LIBRARIAN_DATA_ROOT` (`/data/librarian`, bind-mounted to the deploy host's
+data dir, e.g. `/srv/librarian/data`). Source files and extracted artifacts
+must live on the deploy host — a book whose source/artifacts only exist on a
+dev laptop cannot be re-extracted or re-indexed in production. `index_book`
+loads extracted content before deleting old vectors, so a missing-artifact
+re-index fails safe (no data loss) but also can't refresh the book.
+
 ## Project shape
 
 - Single Python package: `src/librarian/`

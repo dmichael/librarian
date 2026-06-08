@@ -108,6 +108,8 @@ preflight:
 	@test -f Dockerfile || (echo "ERROR: Dockerfile missing"; exit 1)
 	@test -f docker-compose.prod.yml || (echo "ERROR: docker-compose.prod.yml missing"; exit 1)
 	@test -f .env.production || (echo "ERROR: .env.production missing — create one (gitignored) with deploy env vars"; exit 1)
+	@grep -q '^LIBRARIAN_SPARK_URL=' .env.production && grep -q '^GROBID_BASE_URL=' .env.production \
+		|| echo "WARNING: .env.production missing LIBRARIAN_SPARK_URL / GROBID_BASE_URL — extract_book will extract nothing (see .env.production.example)"
 	@git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 		|| (echo "ERROR: not inside a git repo"; exit 1)
 	@echo "Preflight: bare git repo at $(BUILD_SSH):$(GIT_BARE)"

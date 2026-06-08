@@ -85,6 +85,17 @@ def extract_pdf(
     meta_parts: list[DocumentMetadata] = []
 
     spark_url = os.environ.get("LIBRARIAN_SPARK_URL")
+    grobid_url = os.environ.get("GROBID_BASE_URL")
+
+    # Misconfiguration, not a runtime hiccup: with neither extractor configured
+    # a PDF run would silently produce nothing and still look "extracted". Fail
+    # loudly instead so the caller (MCP worker / CLI) surfaces it.
+    if not spark_url and not grobid_url:
+        raise RuntimeError(
+            "extraction not configured: set LIBRARIAN_SPARK_URL (Marker) and/or "
+            "GROBID_BASE_URL (GROBID) before extracting PDFs"
+        )
+
     if spark_url:
         try:
             marker_result = marker.extract(
@@ -101,7 +112,6 @@ def extract_pdf(
     else:
         print("  marker: skipped (LIBRARIAN_SPARK_URL not set)", flush=True)
 
-    grobid_url = os.environ.get("GROBID_BASE_URL")
     if grobid_url:
         try:
             print(f"  Extracting fulltext via GROBID ({grobid_url})...", flush=True)

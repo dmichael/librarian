@@ -191,9 +191,20 @@ Override example:
 make deploy REGISTRY=ms-01.local:5000 DEPLOY_HOST=ms-01.local DEPLOY_PATH=/Users/dmichael/projects/librarian
 ```
 
-Requirement on `ms-01.local`: `.env.librarian` must exist and include runtime
-settings (`LIBRARIAN_DB_URL`, `LIBRARIAN_DATA_ROOT`, `LIBRARIAN_PUBLIC_URL`,
-`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, etc.).
+Requirement: a `.env.production` file (gitignored; loaded by
+`docker-compose.prod.yml`) must exist with the runtime settings. See
+`.env.production.example` for the full list. Key ones:
+
+- `LIBRARIAN_DB_URL`, `LIBRARIAN_DATA_ROOT`, `LIBRARIAN_PUBLIC_URL`
+- `LIBRARIAN_SPARK_URL` + `GROBID_BASE_URL` — **required for `extract_book`**;
+  without them the container silently skips Marker/GROBID and extracts nothing.
+  Both services run on the DGX Spark (`spark-f80b.local`), deployed from the
+  sibling `marker-service` and `grobid-service` repos.
+- `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (optional; legacy cloud extraction)
+
+Data locality: source files and extracted artifacts must live on the deploy
+host under `LIBRARIAN_DATA_ROOT` (the bind-mounted data dir), not on a dev
+machine — otherwise a book can't be re-extracted/re-indexed in production.
 
 ## Connecting to an agent
 

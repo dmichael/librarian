@@ -41,6 +41,19 @@ def test_grobid_header_adopted_for_papers(tmp_path: Path, monkeypatch):
     assert meta.year == 2020
 
 
+def test_extract_pdf_requires_a_configured_extractor(tmp_path: Path, monkeypatch):
+    import pytest
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.delenv("LIBRARIAN_SPARK_URL", raising=False)
+    monkeypatch.delenv("GROBID_BASE_URL", raising=False)
+
+    # Neither extractor configured → loud failure, not a silent empty "success".
+    with pytest.raises(RuntimeError, match="extraction not configured"):
+        extract_mod.extract_pdf(pdf, tmp_path)
+
+
 def test_grobid_header_ignored_without_references(tmp_path: Path, monkeypatch):
     # No bibliography → likely not a paper → don't trust GROBID's front matter.
     meta = _run(tmp_path, monkeypatch, with_refs=False)
