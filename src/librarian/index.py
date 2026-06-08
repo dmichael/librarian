@@ -73,8 +73,7 @@ from librarian.structure import (
     extract_structure_from_blocks,
     validate_structure,
     get_context_for_page,
-    get_chapter_for_block,
-    get_section_for_block,
+    get_hierarchy_for_block,
 )
 
 
@@ -614,29 +613,20 @@ def index_book(
     # Prefer JSON blocks (has page numbers from marker)
     if blocks:
         nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size)
-        # Use BLOCK INDEX for chapter assignment (page numbers may be scrambled)
+        # Use BLOCK INDEX for chapter/section assignment (page numbers may be scrambled)
         for node in nodes:
             block_idx = node.metadata.pop(META_BLOCK_INDEX, None)  # Remove internal field
 
-            # Look up chapter by block index (more reliable than page)
-            chapter = get_chapter_for_block(structure, block_idx) if block_idx is not None else None
+            # Reading-order lookup handles chaptered books and flat articles alike.
+            context = get_hierarchy_for_block(structure, block_idx)
+            if context["chapter_num"] is None and not context["section_title"]:
+                # Nothing found by block index — fall back to page-based lookup.
+                context = get_context_for_page(structure, node.metadata.get(META_PAGE))
 
-            if chapter:
-                section = get_section_for_block(structure, block_idx) if block_idx is not None else None
-                node.metadata[META_CHAPTER_NUM] = chapter.number
-                node.metadata[META_CHAPTER_TITLE] = chapter.title
-                node.metadata[META_SECTION_TITLE] = section or ""
-                node.metadata[META_BREADCRUMB] = (
-                    f"{chapter.breadcrumb} > {section}" if section else chapter.breadcrumb
-                )
-            else:
-                # Fallback to page-based lookup
-                page = node.metadata.get(META_PAGE)
-                context = get_context_for_page(structure, page)
-                node.metadata[META_CHAPTER_NUM] = context["chapter_num"]
-                node.metadata[META_CHAPTER_TITLE] = context["chapter_title"]
-                node.metadata[META_SECTION_TITLE] = context["section_title"]
-                node.metadata[META_BREADCRUMB] = context["breadcrumb"]
+            node.metadata[META_CHAPTER_NUM] = context["chapter_num"]
+            node.metadata[META_CHAPTER_TITLE] = context["chapter_title"]
+            node.metadata[META_SECTION_TITLE] = context["section_title"]
+            node.metadata[META_BREADCRUMB] = context["breadcrumb"]
     else:
         # Fallback: use markdown content with text-based chunking
         documents = create_documents(book_id, content, metadata)

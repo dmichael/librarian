@@ -521,6 +521,31 @@ def get_chapter_for_block(structure: DocumentStructure, block_idx: int) -> Chapt
     return structure.get_chapter(ch_num)
 
 
+def get_hierarchy_for_block(structure: DocumentStructure, block_idx: int | None) -> dict:
+    """Hierarchical context for a block, by reading order.
+
+    Returns the same dict shape as get_context_for_page
+    (chapter_num, chapter_title, section_title, breadcrumb). Works for
+    chapterless documents (flat article sections like Methods/Results) as well
+    as chaptered books — a section is attached even when no chapter is present.
+    """
+    chapter = get_chapter_for_block(structure, block_idx) if block_idx is not None else None
+    section = get_section_for_block(structure, block_idx) if block_idx is not None else None
+
+    crumbs = []
+    if chapter:
+        crumbs.append(chapter.breadcrumb)
+    if section:
+        crumbs.append(section)
+
+    return {
+        "chapter_num": chapter.number if chapter else None,
+        "chapter_title": chapter.title if chapter else "",
+        "section_title": section or "",
+        "breadcrumb": " > ".join(crumbs),
+    }
+
+
 def validate_structure(structure: DocumentStructure, total_pages: int | None = None) -> dict:
     """Validate extracted structure and return diagnostic info.
 

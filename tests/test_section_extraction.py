@@ -3,6 +3,7 @@
 from librarian.structure import (
     extract_structure_from_blocks,
     get_chapter_for_block,
+    get_hierarchy_for_block,
     get_section_for_block,
 )
 
@@ -162,3 +163,56 @@ def test_chapter_and_section_together():
 
     sec2 = get_section_for_block(structure, 7)
     assert sec2 == "Phase Response"
+
+
+def test_hierarchy_for_block_chapter_and_section():
+    blocks = [
+        _header("Chapter 3: Synchrony", page=10),
+        _block("Text", "Overview.", page=10),
+        _header("Coupled Oscillators", page=11),
+        _block("Text", "Two oscillators...", page=11),
+    ]
+    structure = extract_structure_from_blocks(blocks, title="Sync Book")
+
+    ctx = get_hierarchy_for_block(structure, 3)
+    assert ctx["chapter_num"] == 3
+    assert ctx["section_title"] == "Coupled Oscillators"
+    assert ctx["breadcrumb"].endswith("Coupled Oscillators")
+    assert "Coupled Oscillators" in ctx["breadcrumb"]
+
+
+def test_hierarchy_for_block_flat_article_keeps_section():
+    """Regression: chapterless articles must still get section + breadcrumb.
+
+    Previously index_book gated the section lookup behind `if chapter:`, so
+    papers (Methods/Results/Discussion, no chapters) lost all section metadata.
+    """
+    blocks = [
+        _header("Introduction", page=1),
+        _block("Text", "We studied frogs.", page=1),
+        _header("Methods", page=2),
+        _block("Text", "Recordings were made.", page=2),
+    ]
+    structure = extract_structure_from_blocks(blocks, title="Frog Paper")
+    assert len(structure.chapters) == 0  # no chapters — the bug condition
+
+    ctx = get_hierarchy_for_block(structure, 3)  # a Text block under "Methods"
+    assert ctx["chapter_num"] is None
+    assert ctx["chapter_title"] == ""
+    assert ctx["section_title"] == "Methods"
+    assert ctx["breadcrumb"] == "Methods"
+
+
+def test_hierarchy_for_block_none_when_unmapped():
+    blocks = [
+        _header("Chapter 1: Intro", page=1),
+        _block("Text", "Body.", page=1),
+    ]
+    structure = extract_structure_from_blocks(blocks, title="Book")
+
+    # block_idx None and out-of-range both yield empty context
+    for idx in (None, 999):
+        ctx = get_hierarchy_for_block(structure, idx)
+        assert ctx["chapter_num"] is None
+        assert ctx["section_title"] == ""
+        assert ctx["breadcrumb"] == ""

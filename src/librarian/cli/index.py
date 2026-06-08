@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import sys
 from pathlib import Path
 
@@ -25,8 +26,17 @@ from librarian.document_metadata import METADATA_FILENAME, load_document_metadat
 
 
 def _doc_id_from_hash(hash_hex: str) -> int:
-    """Derive a stable integer ID from a content hash hex string."""
-    return int.from_bytes(bytes.fromhex(hash_hex[:8]), "big")
+    """Derive a stable 32-bit integer ID from a directory name (content hash).
+
+    Deterministic across processes — the vector-store book_id must be stable so
+    re-index dedup and --force deletes match prior runs.
+    """
+    try:
+        return int.from_bytes(bytes.fromhex(hash_hex[:8]), "big")
+    except ValueError:
+        # Non-hex directory name (e.g. an explicitly-passed dir): use a stable
+        # digest rather than Python's per-process-salted hash().
+        return int.from_bytes(hashlib.sha256(hash_hex.encode()).digest()[:4], "big")
 
 
 def _metadata_to_index_dict(meta, doc_id: int) -> dict:
@@ -117,7 +127,7 @@ def _run_indexing(args: argparse.Namespace) -> None:
             continue
 
         hash_hex = doc_dir.name
-        doc_id = _doc_id_from_hash(hash_hex) if len(hash_hex) == 64 else hash(hash_hex) & 0xFFFFFFFF
+        doc_id = _doc_id_from_hash(hash_hex)
 
         if not args.force and doc_id in indexed_in_store:
             print(f"  {meta.title or hash_hex}: already indexed, skipping")
