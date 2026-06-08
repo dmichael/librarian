@@ -4,10 +4,16 @@
 # These values override config/settings.yaml.
 # Environment variables (LIBRARIAN_DB_URL, etc.) override both files.
 
-# PostgreSQL connection (override with LIBRARIAN_DB_URL env var)
+# Vector store backend
+# For local dev without postgres, use qdrant-file (no server needed):
 vector_store:
-  backend: pgvector
-  pgvector_url: postgresql://localhost:5432/librarian
+  backend: qdrant-file
+  qdrant_path: ~/data/librarian/vectorstore/qdrant
+#
+# For postgres (production):
+# vector_store:
+#   backend: pgvector
+#   pgvector_url: postgresql://localhost:5432/librarian
 
 # Embedding device: cpu, mps (Apple Silicon), or cuda (NVIDIA)
 embedding:
@@ -15,18 +21,9 @@ embedding:
   device: cpu
 
 # Data paths (override with LIBRARIAN_DATA_ROOT env var)
-# library_path: ~/data/librarian/calibre
 # output_path: ~/data/librarian/converted
-# intake_path: ~/data/librarian/intake/ebooks
 
 # Classification LLM (optional — for librarian-classify)
 # classification:
 #   provider: ollama
 #   model: llama3.2
-
-# Public URL for upload endpoint (override with LIBRARIAN_PUBLIC_URL env var)
-# Set this when the server is accessed over the network, not localhost.
-# public_url: http://ms-01.local:8811
-
-# Kindle DRM (optional — device serial for DRM decryption)
-# kindle_serial: YOUR_DEVICE_SERIAL

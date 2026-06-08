@@ -57,8 +57,10 @@ def extract(
     spark_url: str | None = None,
     timeout: int = 1800,
     write_html: bool = True,
-) -> None:
+) -> dict:
     """Extract source into book_dir/raw/marker/. Raises on any failure.
+
+    Returns a dict with extractor metadata (e.g. {"page_count": N}).
 
     Produces:
       - raw/marker/document.json       chunks (block list)
@@ -67,13 +69,15 @@ def extract(
 
     When write_html=True, also produces (from a second Marker pass):
       - raw/marker/document.html       rendered HTML
-      - raw/marker/html_metadata.json  HTML-pass metadata
       - raw/marker/images/*            JPEG/PNG payloads used by the HTML
+
+    Note: Marker's HTML-pass metadata is byte-identical to the chunks-pass
+    metadata.json, so we don't write it twice.
     """
     if backend == "spark":
         if not spark_url:
             raise ValueError("spark_url is required for backend='spark'")
-        _extract_via_spark(
+        return _extract_via_spark(
             source, book_dir, spark_url=spark_url, timeout=timeout, write_html=write_html
         )
     elif backend == "cloud":
@@ -97,7 +101,7 @@ def _extract_via_spark(
     spark_url: str,
     timeout: int,
     write_html: bool,
-) -> None:
+) -> dict:
     url = f"{spark_url.rstrip('/')}/marker/upload"
     _prepare_output_layout(book_dir)
     marker_output_dir = marker_dir(book_dir)
@@ -130,6 +134,10 @@ def _extract_via_spark(
 
     if write_html:
         _write_html_artifacts(url, source, book_dir, timeout)
+
+    marker_meta = payload.get("metadata", {})
+    page_count = marker_meta.get("page_count") or len(marker_meta.get("page_stats", []))
+    return {"page_count": page_count or None}
 
 
 def _post_to_spark(
@@ -180,9 +188,6 @@ def _write_html_artifacts(url: str, source: Path, book_dir: Path, timeout: int) 
         raise MarkerExtractionError("Spark HTML response missing 'output' field")
 
     (marker_output_dir / "document.html").write_text(html)
-    (marker_output_dir / "html_metadata.json").write_text(
-        json.dumps(payload.get("metadata", {}), indent=2)
-    )
 
     for name, encoded in (payload.get("images") or {}).items():
         (image_dir / Path(name).name).write_bytes(base64.b64decode(encoded))
@@ -252,6 +257,7 @@ def _prepare_output_layout(book_dir: Path) -> None:
         book_dir / f"{book_id}_meta.json",
         book_dir / f"{book_id}.html",
         book_dir / f"{book_id}_html_meta.json",
+        marker_dir(book_dir) / "html_metadata.json",  # was written until 2026-05-25
     ]
     legacy_files.extend(book_dir.glob("_page_*"))
 

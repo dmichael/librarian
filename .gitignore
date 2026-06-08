@@ -36,3 +36,6 @@ tools/plugins/
 
 # Generated extraction QA artifacts; tracked audits should be Markdown files.
 qa/audits/book-*/
+
+# Extracted fixture outputs (regenerated from tests/fixtures/*.pdf)
+tests/fixtures/extracted/

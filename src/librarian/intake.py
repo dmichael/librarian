@@ -404,8 +404,8 @@ def pipeline_main():
     parser.add_argument("--skip-index", action="store_true", help="Skip index step")
     args = parser.parse_args()
 
-    from librarian.extract import main as extract_main
-    from librarian.index import main as index_main
+    from librarian.cli.extract import main as extract_main
+    from librarian.cli.index import main as index_main
 
     print("=" * 60)
     print("Librarian Pipeline")

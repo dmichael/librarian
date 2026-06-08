@@ -1,11 +1,15 @@
-"""Index extracted books into Qdrant vector store."""
+"""Index extracted books into vector store.
 
-import fcntl
+Pure business logic — no CLI, no Calibre. Functions here take
+content and metadata, create nodes, and write to vector stores.
+
+CLI lives in librarian.cli.index.
+Calibre pipeline glue lives in librarian.calibre.index.
+"""
+
 import json
 import re
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 from pylatexenc.latex2text import LatexNodes2Text
@@ -37,16 +41,13 @@ def augment_latex_equations(text: str) -> str:
     augmented = re.sub(r"\$\$(.+?)\$\$", augment_match, text, flags=re.DOTALL)
     return augmented
 
-from llama_index.core import Document, Settings, StorageContext, VectorStoreIndex
+from llama_index.core import Document, StorageContext, VectorStoreIndex
 
-# Lock for serializing Qdrant access (local storage doesn't support concurrent clients)
-QDRANT_LOCK = Path("/tmp/librarian-qdrant.lock")
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
-from librarian.config import expand_path, load_config
 from librarian.metadata_types import (
     META_BLOCK_INDEX,
     META_BREADCRUMB,
@@ -60,8 +61,6 @@ from librarian.metadata_types import (
     with_block_metadata,
 )
 from librarian.files import marker_content_json, marker_markdown
-from librarian import calibre
-from librarian.vectorstore import get_vector_store, get_collection_names
 from librarian.equations import (
     ExtractedEquation,
     extract_equations,
@@ -89,62 +88,6 @@ def extract_page_number(text: str) -> int | None:
         return int(pages[0])  # Return first page found
     return None
 
-
-def get_calibre_metadata(library_path: Path, max_retries: int = 3) -> dict[int, dict]:
-    """Get book metadata from Calibre for all books.
-
-    Retries with exponential backoff if Calibre database is locked.
-    """
-    cmd = [
-        "calibredb", "list",
-        "--library-path", str(library_path),
-        "--fields", "id,title,authors,tags,publisher,pubdate,*subjects,*status,formats",
-        "--for-machine",
-    ]
-
-    for attempt in range(max_retries):
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            break
-
-        # Check if it's a lock contention error (retryable)
-        if "Another calibre program" in result.stderr:
-            delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
-            print(f"Calibre busy, retrying in {delay}s...", file=sys.stderr)
-            time.sleep(delay)
-            continue
-
-        # Non-retryable error
-        print(f"Error querying Calibre: {result.stderr}", file=sys.stderr)
-        return {}
-    else:
-        print(f"Calibre unavailable after {max_retries} retries", file=sys.stderr)
-        return {}
-
-    books = json.loads(result.stdout)
-
-    # Parse subjects (may be string or list depending on Calibre version)
-    for book in books:
-        subjects_raw = book.get("*subjects", [])
-        if isinstance(subjects_raw, str):
-            book["subjects"] = [s.strip() for s in subjects_raw.split(",")] if subjects_raw else []
-        elif isinstance(subjects_raw, list):
-            book["subjects"] = subjects_raw
-        else:
-            book["subjects"] = []
-
-        # Get best source file path (prefer PDF for page linking)
-        formats = book.get("formats", [])
-        source_path = None
-        for fmt in formats:
-            if fmt.lower().endswith(".pdf"):
-                source_path = fmt
-                break
-        if not source_path and formats:
-            source_path = formats[0]  # Fallback to first available
-        book["source_path"] = source_path
-
-    return {book["id"]: book for book in books}
 
 
 def load_extracted_book(book_dir: Path) -> tuple[str | None, str | None]:
@@ -764,178 +707,3 @@ def index_book(
 
 
 
-def parse_args():
-    """Parse command line arguments."""
-    args = {
-        "force": False,
-        "book_ids": [],
-    }
-
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--force":
-            args["force"] = True
-        elif arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_ids"].append(int(sys.argv[i + 1]))
-            i += 1
-        elif arg in ("-h", "--help"):
-            print("Usage: librarian-index [--force] [--book-id ID ...]")
-            print("  --force     Re-index books even if already indexed")
-            print("  --book-id   Only index specific book IDs")
-            sys.exit(0)
-        i += 1
-
-    return args
-
-
-def main():
-    """CLI entry point for indexing."""
-    args = parse_args()
-
-    config = load_config()
-    library_path = expand_path(config["library_path"])
-    output_path = expand_path(config["output_path"])
-
-    # Get Calibre metadata for all books
-    calibre_metadata = get_calibre_metadata(library_path)
-    if not calibre_metadata:
-        print("No books found in Calibre library")
-        return
-
-    # Set up embedding model (global settings for LlamaIndex)
-    embed_model = setup_embedding_model(config)
-    Settings.embed_model = embed_model
-
-    # Get vector store
-    store = get_vector_store(config)
-
-    # Conditional locking - only needed for file-based backends
-    if store.requires_lock():
-        with open(QDRANT_LOCK, "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                _run_indexing(args, config, calibre_metadata, output_path, store, library_path)
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-    else:
-        _run_indexing(args, config, calibre_metadata, output_path, store, library_path)
-
-
-def _run_indexing(args: dict, config: dict, calibre_metadata: dict, output_path: Path, store, library_path: Path):
-    """Run the indexing pipeline.
-
-    Implements triple indexing:
-    1. Text chunks → main collection (librarian_full)
-    2. Equations → equation collection (librarian_equations)
-    3. Chapter summaries → chapter collection (librarian_chapters)
-
-    Only indexes books with *status='extracted' (unless --force).
-    Updates Calibre *status to 'indexed' after successful indexing.
-
-    Args:
-        args: Parsed command line arguments
-        config: Application configuration
-        calibre_metadata: Metadata for all books from Calibre
-        output_path: Path to extracted book content
-        store: Vector store backend (LibrarianVectorStore)
-        library_path: Calibre library path for status updates
-    """
-    # Get collection names
-    collections = get_collection_names(config)
-    collection = collections["full"]
-    equation_collection = collections["equations"]
-    chapter_collection = collections["chapters"]
-
-    # Get LlamaIndex stores for each collection
-    vector_store = store.get_llama_store(collection)
-    equation_store = store.get_llama_store(equation_collection)
-    chapter_store = store.get_llama_store(chapter_collection)
-
-    # Get already indexed books from vector store
-    indexed_in_store = set() if args["force"] else store.get_indexed_ids(collection)
-
-    # Find extracted books (directories with content)
-    extracted_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name.isdigit()]
-
-    # Filter to books needing indexing based on Calibre status
-    books_to_index = []
-    for book_dir in sorted(extracted_dirs, key=lambda d: int(d.name)):
-        book_id = int(book_dir.name)
-
-        # Filter by book ID if specified
-        if args["book_ids"] and book_id not in args["book_ids"]:
-            continue
-
-        metadata = calibre_metadata.get(book_id, {})
-        status = metadata.get("*status")
-
-        # Skip if already indexed (unless forcing)
-        if not args["force"]:
-            if book_id in indexed_in_store:
-                continue
-            # Only index books with status='extracted' (or legacy books with no status)
-            if status not in (None, "extracted"):
-                continue
-
-        books_to_index.append((book_id, book_dir, metadata))
-
-    if not books_to_index:
-        print("No books need indexing")
-        return
-
-    print(f"Found {len(books_to_index)} books to index")
-
-    total_chunks = 0
-    total_equations = 0
-    total_chapters = 0
-
-    for book_id, book_dir, metadata in books_to_index:
-        title = metadata.get("title", "Unknown")
-        metadata["id"] = book_id  # Ensure ID is in metadata for equations
-
-        # Load content (both augmented and raw)
-        content, raw_content = load_extracted_book(book_dir)
-        if not content:
-            print(f"[{book_id}] No extracted content found, skipping")
-            continue
-
-        # Try to load JSON blocks (preferred - has page numbers)
-        blocks = load_extracted_blocks(book_dir)
-
-        source_type = "blocks" if blocks else "markdown"
-        print(f"[{book_id}] {title}: Indexing from {source_type}...")
-
-        # If force re-indexing, delete old entries first
-        if args["force"]:
-            for coll in [collection, equation_collection, chapter_collection]:
-                store.delete_by_filter(coll, "book_id", book_id)
-
-        try:
-            chunks, eq_count, ch_count = index_book(
-                book_id, content, raw_content, metadata,
-                vector_store, equation_store, chapter_store, config,
-                blocks=blocks
-            )
-            total_chunks += chunks
-            total_equations += eq_count
-            total_chapters += ch_count
-
-            # Update pipeline status to indexed
-            calibre.set_status(book_id, "indexed", library_path)
-
-            # Build status message
-            parts = [f"{chunks} chunks"]
-            if eq_count:
-                parts.append(f"{eq_count} equations")
-            if ch_count:
-                parts.append(f"{ch_count} chapters")
-            print(f"[{book_id}] {title}: Created {' + '.join(parts)}")
-        except Exception as e:
-            print(f"[{book_id}] {title}: Indexing failed: {e}", file=sys.stderr)
-
-    print(f"\nTotal indexed: {total_chunks} chunks, {total_equations} equations, {total_chapters} chapters")
-
-
-if __name__ == "__main__":
-    main()

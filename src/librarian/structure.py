@@ -12,47 +12,50 @@ This structure enables:
 """
 
 import re
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
-@dataclass
-class Section:
-    """A section within a chapter."""
+class Section(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     page_start: int | None = None
     parent_chapter: int | None = None
 
 
-@dataclass
-class Chapter:
-    """A chapter in the document."""
+class Chapter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     number: int
     title: str
     page_start: int | None = None
     page_end: int | None = None
-    sections: list[Section] = field(default_factory=list)
-    summary: str = ""  # LLM-generated or extracted from content
+    sections: list[Section] = Field(default_factory=list)
+    summary: str = ""
 
+    @computed_field
     @property
     def breadcrumb(self) -> str:
-        """Generate breadcrumb for this chapter."""
         return f"Chapter {self.number}: {self.title}"
 
 
-@dataclass
-class BookSection:
-    """A major section of the book (e.g., 'Section One: An Investor's Guide')."""
-    number: int | None
+class BookSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: int | None = None
     title: str
-    chapters: list[int] = field(default_factory=list)  # chapter numbers
+    chapters: list[int] = Field(default_factory=list)
 
 
-@dataclass
-class DocumentStructure:
-    """Complete document structure with chapters and sections."""
+class DocumentStructure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
-    book_sections: list[BookSection] = field(default_factory=list)
-    chapters: list[Chapter] = field(default_factory=list)
+    book_sections: list[BookSection] = Field(default_factory=list)
+    chapters: list[Chapter] = Field(default_factory=list)
+    block_to_chapter: dict[int, int] = Field(default_factory=dict, exclude=True)
+    block_to_section: dict[int, str] = Field(default_factory=dict, exclude=True)
 
     def get_chapter(self, num: int) -> Chapter | None:
         """Get chapter by number."""
@@ -422,33 +425,87 @@ def extract_structure_from_blocks(blocks: list[dict], title: str = "") -> Docume
         )
         structure.chapters.append(chapter)
 
-    # Build block index to chapter mapping
-    # This maps each block to the chapter it belongs to (for use in indexing)
-    structure._block_to_chapter: dict[int, int] = {}  # block_idx -> chapter_num
-
     # Find content chapter start blocks (non-TOC chapter headers)
     content_chapter_starts = []  # [(block_idx, ch_num)]
+    chapter_block_set: set[int] = set()
     for idx, ch_num, _, _ in chapter_occurrences:
         if idx >= toc_end_idx:
             content_chapter_starts.append((idx, ch_num))
-
-    # Sort by block index
+            chapter_block_set.add(idx)
     content_chapter_starts.sort(key=lambda x: x[0])
 
-    # Map blocks to chapters based on which chapter header precedes them
+    # Build block-to-chapter mapping
     if content_chapter_starts:
         current_chapter_num = None
         chapter_idx = 0
         for block_idx in range(len(blocks)):
-            # Check if we've reached a new chapter
             while (chapter_idx < len(content_chapter_starts) and
                    block_idx >= content_chapter_starts[chapter_idx][0]):
                 current_chapter_num = content_chapter_starts[chapter_idx][1]
                 chapter_idx += 1
             if current_chapter_num is not None:
-                structure._block_to_chapter[block_idx] = current_chapter_num
+                structure.block_to_chapter[block_idx] = current_chapter_num
+
+    # Second pass: collect sections from SectionHeader blocks that weren't
+    # matched as chapters and are past the TOC.  Works for both:
+    #   - books (sections nested under chapters)
+    #   - articles (flat sections like METHODS, RESULTS with no chapters)
+    skip_titles = {"chapter summary", "notes", "references", "bibliography"}
+    has_chapters = bool(structure.chapters)
+
+    section_starts: list[tuple[int, str]] = []  # (block_idx, title)
+    for idx, block in enumerate(blocks):
+        if block.get("block_type") != "SectionHeader":
+            continue
+        if idx < toc_end_idx or idx in chapter_block_set:
+            continue
+
+        text = block.get("text") or _strip_html(block.get("html", ""))
+        text = re.sub(r"^#+\s*", "", text).strip()
+        text = re.sub(r"\*{1,2}", "", text).strip()
+        if not text or text.lower() in skip_titles:
+            continue
+
+        if has_chapters:
+            ch_num = structure.block_to_chapter.get(idx)
+            if ch_num is None:
+                continue
+            chapter = structure.get_chapter(ch_num)
+            if chapter is None:
+                continue
+            page = block.get("page")
+            chapter.sections.append(Section(
+                title=text,
+                page_start=page if isinstance(page, int) else None,
+                parent_chapter=ch_num,
+            ))
+
+        section_starts.append((idx, text))
+
+    # Build block-to-section mapping: each block gets the most recent
+    # section title. For books, reset at chapter boundaries.
+    current_section: str | None = None
+    section_idx = 0
+    current_ch: int | None = None
+    for block_idx in range(len(blocks)):
+        if has_chapters:
+            ch_num = structure.block_to_chapter.get(block_idx)
+            if ch_num is not None and ch_num != current_ch:
+                current_ch = ch_num
+                current_section = None
+        while (section_idx < len(section_starts)
+               and block_idx >= section_starts[section_idx][0]):
+            current_section = section_starts[section_idx][1]
+            section_idx += 1
+        if current_section:
+            structure.block_to_section[block_idx] = current_section
 
     return structure
+
+
+def get_section_for_block(structure: DocumentStructure, block_idx: int) -> str | None:
+    """Get the section title for a block, based on reading order."""
+    return structure.block_to_section.get(block_idx)
 
 
 def get_chapter_for_block(structure: DocumentStructure, block_idx: int) -> Chapter | None:
@@ -457,10 +514,7 @@ def get_chapter_for_block(structure: DocumentStructure, block_idx: int) -> Chapt
     Uses the block-to-chapter mapping created during structure extraction.
     This is more reliable than page-based lookup when page numbers are scrambled.
     """
-    if not hasattr(structure, '_block_to_chapter'):
-        return None
-
-    ch_num = structure._block_to_chapter.get(block_idx)
+    ch_num = structure.block_to_chapter.get(block_idx)
     if ch_num is None:
         return None
 

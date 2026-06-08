@@ -51,13 +51,14 @@ serve = [
 ]  # MCP server with full pipeline
 
 [project.scripts]
-# Main commands
+librarian = "librarian.cli:main"
+# Legacy hyphenated names (still work)
 librarian-pipeline = "librarian.intake:pipeline_main"
 librarian-init = "librarian.intake:init_main"
 librarian-intake = "librarian.intake:intake_main"
-librarian-extract = "librarian.extract:main"
+librarian-extract = "librarian.cli.extract:main"
 librarian-extract-cloud = "librarian.cloud_extract:main"
-librarian-index = "librarian.index:main"
+librarian-index = "librarian.cli.index:main"
 librarian-status = "librarian.calibre:status_main"
 # Query and search
 librarian-query = "librarian.query:main"

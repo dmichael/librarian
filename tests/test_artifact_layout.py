@@ -107,7 +107,7 @@ def test_spark_extraction_writes_marker_artifacts_under_raw_marker(tmp_path: Pat
     assert (raw_marker / "document.md").read_text() == "Hello marker"
     assert json.loads((raw_marker / "metadata.json").read_text()) == {"pages": 1}
     assert (raw_marker / "document.html").read_text() == "<html><body>Hello marker</body></html>"
-    assert json.loads((raw_marker / "html_metadata.json").read_text()) == {"pages": 1}
+    assert not (raw_marker / "html_metadata.json").exists()
     assert (raw_marker / "images" / "3.jpeg").read_bytes() == b"image"
     assert not (book_dir / "2.json").exists()
     assert not (book_dir / "2.md").exists()
