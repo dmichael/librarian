@@ -234,75 +234,52 @@ def create_nodes_from_blocks(
     blocks: list[dict],
     book_id: int,
     metadata: dict,
-    chunk_size: int = 512,
+    chunk_size: int = 320,
+    chunk_overlap: int = 64,
 ) -> list[TextNode]:
     """Create LlamaIndex nodes from marker JSON blocks.
 
-    Each block becomes a node with page number and block type metadata.
-    Large blocks are split to respect chunk_size.
+    Each block becomes one or more nodes carrying page/block_type/block_idx
+    metadata. Oversized blocks are split with a TOKEN-aware splitter so no node
+    exceeds the embedding model's sequence limit (BGE truncates >512 tokens) —
+    this applies to every block type, including Code, so long listings aren't
+    silently truncated at embed time. Sub-chunks of a block keep that block's
+    metadata, so chapter/section lookup by block_idx still resolves correctly.
 
     Args:
         blocks: List of block dicts from load_extracted_blocks
-        book_id: Calibre book ID
-        metadata: Book metadata from Calibre
-        chunk_size: Max characters per node (large blocks are split)
+        book_id: Book ID
+        metadata: Book metadata
+        chunk_size: Max tokens per node (oversized blocks are split)
+        chunk_overlap: Token overlap between sub-chunks of a split block
 
     Returns:
         List of TextNode objects ready for indexing.
-        Each node has _block_idx in metadata for chapter lookup.
+        Each node has _block_idx in metadata for chapter/section lookup.
     """
     base_metadata = build_base_node_metadata(book_id=book_id, metadata=metadata)
+    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     nodes = []
     for block_idx, block in enumerate(blocks):
         text = block["text"]
-        page = block.get("page")
         block_type = block.get("block_type", "Text")
-
-        # Code blocks: clean line number artifacts, never split
         if block_type == "Code":
             text = _clean_code_text(text)
-            node_meta = with_block_metadata(
-                base_metadata,
-                page=page,
-                block_type=block_type,
-                block_idx=block_idx,
-            )
-            nodes.append(TextNode(text=text, metadata=node_meta))
+        if not text or not text.strip():
             continue
 
-        # Split large text blocks on paragraphs
-        if len(text) > chunk_size * 1.5:
-            parts = text.split("\n\n")
-            current_chunk = ""
-            for part in parts:
-                if len(current_chunk) + len(part) > chunk_size and current_chunk:
-                    node_meta = with_block_metadata(
-                        base_metadata,
-                        page=page,
-                        block_type=block_type,
-                        block_idx=block_idx,
-                    )
-                    nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
-                    current_chunk = part
-                else:
-                    current_chunk += "\n\n" + part if current_chunk else part
-            if current_chunk.strip():
-                node_meta = with_block_metadata(
-                    base_metadata,
-                    page=page,
-                    block_type=block_type,
-                    block_idx=block_idx,
-                )
-                nodes.append(TextNode(text=current_chunk.strip(), metadata=node_meta))
-        else:
+        page = block.get("page")
+        # split_text returns [text] when already within budget, multiple pieces
+        # (with overlap) when the block is too large for one embedding.
+        for piece in splitter.split_text(text):
             node_meta = with_block_metadata(
                 base_metadata,
                 page=page,
                 block_type=block_type,
                 block_idx=block_idx,
             )
-            nodes.append(TextNode(text=text, metadata=node_meta))
+            nodes.append(TextNode(text=piece, metadata=node_meta))
 
     return nodes
 
@@ -312,17 +289,21 @@ def setup_embedding_model(config: dict) -> HuggingFaceEmbedding:
     embedding_config = config.get("embedding", {})
     model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
     device = embedding_config.get("device", "cpu")
+    batch_size = embedding_config.get("batch_size", 48)
 
-    print(f"Loading embedding model: {model_name} on {device}")
+    print(f"Loading embedding model: {model_name} on {device} (batch={batch_size})")
 
     # For BGE models, we need to add the query instruction
     if "bge" in model_name.lower():
         return HuggingFaceEmbedding(
             model_name=model_name,
             device=device,
+            embed_batch_size=batch_size,
             query_instruction="Represent this sentence for searching relevant passages: ",
         )
-    return HuggingFaceEmbedding(model_name=model_name, device=device)
+    return HuggingFaceEmbedding(
+        model_name=model_name, device=device, embed_batch_size=batch_size
+    )
 
 
 
@@ -610,12 +591,12 @@ def index_book(
 
     # Set up chunking config
     chunk_config = config.get("chunking", {})
-    chunk_size = chunk_config.get("chunk_size", 512)
-    chunk_overlap = chunk_config.get("chunk_overlap", 50)
+    chunk_size = chunk_config.get("chunk_size", 320)
+    chunk_overlap = chunk_config.get("chunk_overlap", 64)
 
     # Prefer JSON blocks (has page numbers from marker)
     if blocks:
-        nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size)
+        nodes = create_nodes_from_blocks(blocks, book_id, metadata, chunk_size, chunk_overlap)
         # Use BLOCK INDEX for chapter/section assignment (page numbers may be scrambled)
         for node in nodes:
             block_idx = node.metadata.pop(META_BLOCK_INDEX, None)  # Remove internal field
