@@ -240,6 +240,40 @@ def test_extract_fulltext_204_writes_empty_artifacts(tmp_path: Path, monkeypatch
     assert json.loads((grobid_dir / "figures.json").read_text()) == []
 
 
+def test_parse_fulltext_tei_rejects_non_tei():
+    import pytest
+    # A 200 OK carrying an HTML error/queue page must not parse to empty results.
+    with pytest.raises(ValueError):
+        parse_fulltext_tei("<html><body>503 Service Unavailable</body></html>")
+
+
+def test_extract_fulltext_non_tei_200_raises_and_writes_nothing(tmp_path: Path, monkeypatch):
+    import pytest
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    class FakeResponse:
+        status_code = 200
+        text = "<html><body>Internal Server Error</body></html>"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(
+        "librarian.extractors.grobid.httpx.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    with pytest.raises(ValueError):
+        extract_fulltext(pdf, tmp_path, base_url="http://grobid.test:8070")
+
+    # No partial artifact set left behind (parse happens before any write).
+    grobid_dir = tmp_path / "raw" / "grobid"
+    assert not (grobid_dir / "fulltext.tei.xml").exists()
+    assert not (grobid_dir / "citations.json").exists()
+
+
 def test_fulltext_result_serialization():
     result = FulltextResult(
         references=[],

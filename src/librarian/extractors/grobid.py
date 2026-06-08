@@ -214,23 +214,22 @@ def extract_fulltext(
             timeout=timeout,
         )
 
-    out_dir = book_dir / "raw" / "grobid"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+    # Parse BEFORE writing anything, so a bad response (malformed XML, or a
+    # non-TEI 200 error page) raises instead of leaving a partial artifact set.
     if response.status_code == 204:
-        empty_tei = (
+        tei = (
             f'<TEI xmlns="{TEI_NSMAP}"><teiHeader/>'
             f"<text><body/><back><listBibl/></back></text></TEI>"
         )
-        (out_dir / "fulltext.tei.xml").write_text(empty_tei)
-        result = FulltextResult(
-            references=[], citations=[], sections=[], figures=[]
-        )
+        result = FulltextResult(references=[], citations=[], sections=[], figures=[])
     else:
         response.raise_for_status()
         tei = response.text
-        (out_dir / "fulltext.tei.xml").write_text(tei)
         result = parse_fulltext_tei(tei)
+
+    out_dir = book_dir / "raw" / "grobid"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "fulltext.tei.xml").write_text(tei)
 
     # Write compat references artifacts (same as extract())
     ref_tei = _extract_listbibl_xml(out_dir / "fulltext.tei.xml")
@@ -257,8 +256,18 @@ def extract_fulltext(
 
 
 def parse_fulltext_tei(tei_xml: str) -> FulltextResult:
-    """Parse a complete GROBID fulltext TEI document."""
+    """Parse a complete GROBID fulltext TEI document.
+
+    Raises ValueError if the payload is not a TEI document — e.g. GROBID (or a
+    proxy in front of it) returned HTTP 200 with an HTML error/queue page. That
+    must surface as an error rather than be silently parsed to empty results.
+    """
     root = ET.fromstring(tei_xml)
+    if _strip_ns(root.tag) != "TEI":
+        raise ValueError(
+            f"expected a TEI document, got root <{_strip_ns(root.tag)}> "
+            "(GROBID may have returned a non-TEI error response)"
+        )
 
     references = _parse_references(root)
     ref_id_map = _build_ref_id_map(root)
