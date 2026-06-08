@@ -12,21 +12,13 @@ from pathlib import Path
 
 from librarian.config import expand_path, load_config
 from librarian.files import marker_content_json
+from librarian.htmltext import html_to_text
 from librarian.metadata import compare_authors, lookup_isbn
 
 
 def _html_to_text(html: str, preserve_newlines: bool = False) -> str:
     """Convert HTML to plain text."""
-    if not html:
-        return ""
-    text = re.sub(r'<[^>]+>', '', html)
-    if preserve_newlines:
-        # Collapse multiple spaces but keep newlines
-        text = re.sub(r'[^\S\n]+', ' ', text)
-        text = re.sub(r'\n\s*\n', '\n', text)
-    else:
-        text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    return html_to_text(html, "lines" if preserve_newlines else "flat")
 
 
 def _load_book_json(book_id: int, config: dict) -> dict | None:

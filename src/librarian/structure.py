@@ -15,6 +15,8 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from librarian.htmltext import html_to_text
+
 
 class Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -320,7 +322,7 @@ def get_chapter_toc(structure: DocumentStructure) -> str:
 
 def _strip_html(html: str) -> str:
     """Strip HTML tags from text."""
-    return re.sub(r'<[^>]+>', '', html).strip()
+    return html_to_text(html, "strip")
 
 
 def extract_structure_from_blocks(blocks: list[dict], title: str = "") -> DocumentStructure:

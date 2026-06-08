@@ -13,26 +13,12 @@ from pathlib import Path
 
 from librarian.config import expand_path, load_config
 from librarian.files import marker_content_json
+from librarian.htmltext import html_to_text
 
 
 def _html_to_text(html: str) -> str:
-    """Convert HTML to plain text, preserving structure."""
-    if not html:
-        return ""
-    # Remove image references
-    text = re.sub(r'<img[^>]*>', '', html)
-    # Convert common tags
-    text = re.sub(r'<br\s*/?>', '\n', text)
-    text = re.sub(r'<p[^>]*>', '', text)
-    text = re.sub(r'</p>', '\n\n', text)
-    text = re.sub(r'<li[^>]*>', '  - ', text)
-    text = re.sub(r'</li>', '\n', text)
-    # Remove remaining tags
-    text = re.sub(r'<[^>]+>', '', text)
-    # Clean up whitespace
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    text = text.strip()
-    return text
+    """Convert HTML to plain text, preserving block structure."""
+    return html_to_text(html, "structured")
 
 
 def _load_book_json(book_id: int, config: dict = None) -> dict | None:

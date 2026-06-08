@@ -127,18 +127,28 @@ def get_book_metadata(
         session.close()
 
 
-def update_book_fields(book_id: int, config: dict | None = None, **fields) -> bool:
-    """Update columns on a single book; returns False if the book is missing.
+# Non-column metadata keys that callers may stash in the JSONB blob. Anything
+# outside (columns ∪ this set) is rejected so a typo can't silently no-op.
+_JSONB_META_KEYS = {"publisher", "year"}
 
-    Unknown keys are merged into the JSONB metadata blob rather than set as
-    columns, so callers can stash publisher/year/etc. without a schema change.
+
+def update_book_fields(book_id: int, config: dict | None = None, **fields) -> bool:
+    """Update a single book; returns False if the book is missing.
+
+    Known columns are set directly; keys in _JSONB_META_KEYS are merged into the
+    JSONB metadata blob. An unrecognized key raises ValueError rather than
+    silently writing to the blob (catching typos / stale field names).
     """
+    column_names = {c.name for c in Book.__table__.columns}
+    unknown = set(fields) - column_names - _JSONB_META_KEYS
+    if unknown:
+        raise ValueError(f"unknown book field(s): {sorted(unknown)}")
+
     session = get_session(config)
     try:
         book = session.query(Book).filter(Book.id == book_id).first()
         if book is None:
             return False
-        column_names = {c.name for c in Book.__table__.columns}
         meta = dict(book.metadata_ or {})
         for key, value in fields.items():
             if key in column_names:
