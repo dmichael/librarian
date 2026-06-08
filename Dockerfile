@@ -37,17 +37,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Runtime deps only (no build-essential)
+# Runtime deps only (no build-essential).
+# (Calibre and its Qt deps were removed — no ebook-convert/calibredb in the pipeline.)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libpq5 wget xz-utils \
-        libegl1 libopengl0 libxcb-cursor0 libfreetype6 \
-        poppler-utils \
+        libpq5 poppler-utils \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Calibre (headless — ebook-convert + calibredb for format conversion / DRM)
-RUN wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin install_dir=/opt
-ENV PATH="/opt/calibre:${PATH}"
 
 # Copy installed Python packages and app from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages

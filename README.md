@@ -158,22 +158,26 @@ For safe migration workflow, see `docs/DB_MAINTENANCE.md`.
 
 ### One-command deploy
 
-`make deploy` now performs:
-
-1. Docker build (tag defaults to `git describe --always --dirty`)
-2. Push to `ms-01.local:5000`
-3. Remote `docker compose -f docker-compose.prod.yml up -d` on `ms-01.local`
-
-Container startup runs `alembic upgrade head` before launching MCP server, so
-migrations are applied at boot (no separate migration step).
-
-Use preflight checks explicitly:
-
 ```bash
-make deploy-preflight
+make ship
 ```
 
-`make deploy` also runs preflight automatically before build/push/deploy.
+`make ship` runs the full flow in order (so you can't ship a stale image):
+
+1. `git push ms-01 main` — publish source to the bare repo on `ms-01.local`
+2. `make build` — `ms-01.local` builds the linux/amd64 image from `ms-01/main`
+   and pushes it to the local registry `ms-01.local:5000`
+   (refuses to build if `ms-01/main` ≠ your local `HEAD`)
+3. `make deploy` — `ms-01.local` pulls the image and runs
+   `docker compose -f docker-compose.prod.yml up -d`
+
+Container startup runs `alembic upgrade head` before launching the MCP server,
+so migrations are applied at boot (no separate migration step).
+
+`build` and `deploy` each run `make preflight` first (checks docker, the deploy
+context, and `.env.production`, and bootstraps the git remote). Run steps
+individually with `make build` / `make deploy`, or `make preflight` alone — see
+`make help`.
 
 Defaults in `Makefile`:
 

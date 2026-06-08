@@ -8,11 +8,18 @@ registered source artifacts in this pipeline.
 
 ## Read first
 
-1. `SPEC.md` — design intent
-2. `README.md` — setup and current interface
+1. `SPEC.md` — design intent (original vision; predates Calibre removal)
+2. `README.md` — setup, current interface, and deploy
 3. `docs/QUICKSTART.md` — bootstrap commands
 4. `docs/AGENT_CONTEXT.md` — operational/context details (non-rule reference)
 5. `docs/DB_MAINTENANCE.md` — safe DB migration workflow
+
+## Build & deploy
+
+Deploy to `ms-01.local` with **`make ship`** (push → build on ms-01 → deploy;
+`alembic upgrade head` runs at container boot). `make help` lists every target;
+README §Deployment has the details. The Makefile is the source of truth — don't
+hand-run docker build/push. Only deploy when the user asks (see rule 1).
 
 ## Core behavior rules
 

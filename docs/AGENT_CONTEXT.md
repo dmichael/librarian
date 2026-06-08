@@ -23,10 +23,12 @@ Behavior and safety rules live in `AGENTS.md`.
 ```text
 src/librarian/
   mcp_server.py       MCP tools + HTTP upload/download routes
-  db.py               SQLAlchemy model for books table
-  query.py            Retrieval logic
+  db.py               SQLAlchemy model + helpers for the books table
+  extract.py          Extraction orchestration (Marker + GROBID)
+  extractors/         Per-tool extractors (marker, grobid)
   index.py            Chunking, embedding, vector insertion
-  cloud_extract.py    Modal extraction
+  query.py            Retrieval logic
+  cli/                `librarian` CLI (extract / index / query / serve)
   config.py           Config loading
   vectorstore/        Backend abstraction
 
@@ -59,20 +61,18 @@ config/
 - `verify_book` — post-index QA checks
 - `download_book` — get source download URL
 
-## Legacy CLI commands
+## CLI commands
 
-- `librarian-serve`
-- `librarian-extract` / `librarian-extract --cloud`
-- `librarian-index`
-- `librarian-query`
-- `librarian-ask`
-- `librarian-classify`
-- `librarian-status`
+- `librarian` — dispatcher (`extract` / `index` / `query` / `serve`)
+- `librarian-serve` — MCP server
+- `librarian-extract` / `librarian-index` — file-mode extract / index
+- `librarian-query` / `librarian-ask` — retrieval / RAG
+- `librarian-classify` / `librarian-enrich` — service-mode (books table) utilities
 
 Run CLI via venv, for example:
 
 ```bash
-.venv/bin/librarian-status
+.venv/bin/librarian-index
 ```
 
 If scripts are missing after environment changes:
@@ -89,8 +89,8 @@ If scripts are missing after environment changes:
 ## Common code entry points
 
 - MCP/server: `src/librarian/mcp_server.py`
-- Extraction: `src/librarian/extract.py`, `src/librarian/cloud_extract.py`
+- Extraction: `src/librarian/extract.py`, `src/librarian/extractors/`
 - Indexing/retrieval: `src/librarian/index.py`, `src/librarian/query.py`
 - Classification: `src/librarian/classify.py`
-- DB model: `src/librarian/db.py`
+- DB model + helpers: `src/librarian/db.py`
 - Vector backends: `src/librarian/vectorstore/`

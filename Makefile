@@ -10,61 +10,34 @@
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: all status intake extract extract-cloud index clean help build run deploy preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality
+.PHONY: help index run build deploy ship preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality clean-extracted clean-extracted-confirm
 
-# Default: run full pipeline
-all: intake extract index
+.DEFAULT_GOAL := help
 
 help:
-	@echo "Librarian Pipeline"
+	@echo "Librarian — build & deploy to ms-01"
 	@echo ""
-	@echo "Usage:"
-	@echo "  make              Run full pipeline (intake → extract → index)"
-	@echo "  make status       Show pipeline state from Calibre"
-	@echo "  make intake       Import new books to Calibre"
-	@echo "  make extract      Extract books locally (slow, ~10h/book)"
-	@echo "  make extract-cloud Extract on Modal A100s (fast, parallel)"
-	@echo "  make index        Index extracted content to vector store"
-	@echo "  git push ms01 main  Publish source to bare repo on $(BUILD_SSH)"
-	@echo "  make build         Build amd64 image on $(BUILD_SSH) from ms01/main, push to $(REGISTRY)"
-	@echo "  make deploy        Pull image on $(DEPLOY_CONTEXT) + compose up -d"
-	@echo "  make preflight     Bootstrap git remote / build workspace / docker context"
-	@echo "  make run           Run locally with docker compose (dev)"
-	@echo "  make test-baseline Run local characterization tests (unittest)"
-	@echo "  make test-retrieval-quality Run focused retrieval quality smoke tests"
-	@echo "  make db-migrate-snapshot  Create safe DB snapshot (no migration)"
-	@echo "  make db-migrate-safe      Snapshot + apply Alembic migration safely"
+	@echo "Deploy (to $(DEPLOY_SSH)):"
+	@echo "  make ship          push + build on ms-01 + deploy  (one command)"
+	@echo "  make preflight     check docker/context/.env.production, bootstrap git remote"
+	@echo "  make build         build amd64 image on $(BUILD_SSH) from $(GIT_REMOTE)/main, push to $(REGISTRY)"
+	@echo "  make deploy        pull image on $(DEPLOY_CONTEXT) + compose up -d  (alembic runs at boot)"
+	@echo "  make run           run locally with docker compose (dev)"
 	@echo ""
-	@echo "Cloud extraction requires: pip install -e '.[cloud]' && modal setup"
-	@echo "Docker API override: DOCKER_API_VERSION=1.45 (set higher/lower per host if needed)"
+	@echo "Index / DB / tests:"
+	@echo "  make index                index extracted dirs under output_path"
+	@echo "                            (extract first: librarian extract <files> -o <output_path>)"
+	@echo "  make db-migrate-snapshot  safe DB snapshot (no migration)"
+	@echo "  make db-migrate-safe      snapshot + apply Alembic migration safely"
+	@echo "  make test-baseline        local characterization tests"
+	@echo "  make test-retrieval-quality  retrieval quality smoke tests"
+	@echo ""
+	@echo "Docker API override: DOCKER_API_VERSION=1.45 (set per host if needed)"
 
-# Show pipeline status
-status:
-	@$(VENV)/librarian-status
-
-# Import new books to Calibre
-intake:
-	@$(VENV)/librarian-intake
-
-# Extract books locally (serialized, uses local GPU)
-extract:
-	@$(VENV)/librarian-extract
-
-# Extract books on cloud (parallel Modal A100s)
-# Requires: pip install -e ".[cloud]" && modal setup
-extract-cloud:
-	@$(VENV)/librarian-extract --cloud
-
-# Dry-run cloud extraction (see what would be extracted)
-extract-cloud-dry:
-	@$(VENV)/librarian-extract --cloud --dry-run
-
-# Index extracted content
+# Index extracted content into the vector store (scans output_path).
+# To extract first: librarian extract <files> -o <output_path>
 index:
 	@$(VENV)/librarian-index
-
-# Run full pipeline on cloud
-cloud: intake extract-cloud index
 
 # Clean extracted content (use with caution)
 clean-extracted:
@@ -192,6 +165,14 @@ release:
 	$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) tag $(IMAGE_LATEST) $(REGISTRY)/$(IMAGE):$(V)
 	$(DOCKER_API_ENV) $(DOCKER) --context $(DEPLOY_CONTEXT) push $(REGISTRY)/$(IMAGE):$(V)
 	@echo "Pushed $(REGISTRY)/$(IMAGE):$(V)"
+
+# One-command deploy: publish source to ms-01, build the image there, deploy it.
+# Wraps the three-step flow so you can't forget to push — `build` requires
+# $(GIT_REMOTE)/main to equal local HEAD, so this pushes first.
+ship:
+	git push $(GIT_REMOTE) main
+	$(MAKE) build
+	$(MAKE) deploy
 
 deploy: preflight
 	@echo "Pulling latest librarian image on $(DEPLOY_CONTEXT)..."
