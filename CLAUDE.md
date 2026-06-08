@@ -1,11 +1,9 @@
 # Claude Code Context: Librarian Project
 
-This repository uses `AGENTS.md` as the canonical agent entrypoint.
+`AGENTS.md` is the canonical agent entrypoint — start there. It lists the
+current "read first" docs (SPEC, README, QUICKSTART, AGENT_CONTEXT,
+DB_MAINTENANCE) and the core behavior/safety rules.
 
-## Read first
-
-1. `AGENTS.md` — how to work in this repo
-2. `HANDOFF.md` — architecture notes and key decisions
-3. `SPEC.md` — design intent and vision
-4. `docs/QUICKSTART.md` — bootstrap and workflows
-5. `docs/TROUBLESHOOTING.md` — common setup/debug checks
+Note: `SPEC.md` is the original design vision and predates the removal of
+Calibre — read it for intent, not current mechanics. For how the system works
+today see `AGENTS.md`, `README.md`, and `docs/QUICKSTART.md`.

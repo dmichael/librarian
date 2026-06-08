@@ -60,21 +60,17 @@ marker_single ~/data/librarian/source/kindle-captures/{book-slug}/combined.pdf \
 
 ### Phase 4: Ingest to Pipeline
 
-Move the markdown to the converted folder and add to Calibre:
+Run the combined PDF through the normal extract → index pipeline (this supersedes
+the manual `marker_single` step above — `librarian extract` produces the proper
+artifact layout that the indexer expects):
 
 ```bash
-# Create a book entry in Calibre (use the combined PDF as source)
-calibredb add ~/data/librarian/source/kindle-captures/{book-slug}/combined.pdf \
-  --library-path ~/data/librarian/calibre
+# Extract the captured PDF into the converted/ artifacts dir
+librarian extract ~/data/librarian/source/kindle-captures/{book-slug}/combined.pdf \
+  -o ~/data/librarian/converted
 
-# Get the book ID from the output, then copy markdown
-BOOK_ID=<id from above>
-mkdir -p ~/data/librarian/converted/$BOOK_ID
-cp ~/data/librarian/source/kindle-captures/{book-slug}/markdown/*.md \
-   ~/data/librarian/converted/$BOOK_ID/full.md
-
-# Index for RAG
-librarian-index --book-id $BOOK_ID
+# Index all unindexed extraction dirs (or pass the specific {hash} dir)
+librarian index
 ```
 
 ## Script Reference

@@ -9,9 +9,12 @@ workflow and host topology, see `README.md`, `docs/AGENT_CONTEXT.md`, and
 ## 1) Prerequisites
 
 - Python 3.12+
-- Calibre installed (provides `calibredb` and `ebook-convert`)
-- `marker-pdf` installed (provides `marker_single`) for PDF → Markdown
+- For PDF extraction: a Marker HTTP service reachable at `LIBRARIAN_SPARK_URL`,
+  and (for references/citations/sections) a GROBID service at `GROBID_BASE_URL`
+- A vector store (file-based Qdrant for local use, or pgvector for the service)
 - Optional: Ollama running locally for classification and RAG synthesis
+
+Calibre is no longer used.
 
 ## 2) Python environment
 
@@ -34,45 +37,42 @@ cp config/settings.local.example.yaml config/settings.local.yaml
 
 Then edit paths/models as needed.
 
-## 4) One book end-to-end (Calibre → ask)
+## 4) One file end-to-end (file mode → ask)
 
-1) Add a book into Calibre (use your real Calibre library path):
+File mode is the no-database path: extract a file to an artifacts directory,
+then index that directory into the vector store.
 
-```bash
-calibredb add /path/to/book.pdf --library-path ~/data/librarian/calibre
-```
-
-2) Extract to markdown:
-
-```bash
-librarian-extract --book-id 1
-```
-
-3) Classify (interactive):
+1) Extract a file to the configured `output_path` (one `{content_hash}/`
+   subdirectory is created per file). PDFs need `LIBRARIAN_SPARK_URL` (and
+   `GROBID_BASE_URL` for references) set:
 
 ```bash
-librarian-classify --book-id 1
+librarian extract /path/to/book.pdf -o ~/data/librarian/converted
 ```
 
-4) Index:
+2) Index all unindexed extraction directories under `output_path`:
 
 ```bash
-librarian-index --book-id 1
+librarian index            # or: librarian index ~/data/librarian/converted/<hash>
 ```
 
-5) Ask:
+3) Ask / query:
 
 ```bash
 librarian-ask "What are the main ideas in this book?"
+librarian-query --subject psychology/* "emotion regulation"
 ```
 
 ## 5) Common operations
 
-- Re-extract: `librarian-extract --force --book-id N`
-- Re-classify: `librarian-classify --force --book-id N`
-- Re-index: `librarian-index --force --book-id N`
-- Retrieval only: `librarian-query --subject psychology/* "emotion regulation"`
+- Extract several files: `librarian extract a.pdf b.epub -o DIR`
+- Re-index everything: `librarian index --force`
 - Scoped RAG: `librarian-ask --library therapy "How do I cope when overwhelmed?"`
+
+Service mode (MCP server + postgres `books` table) is the path agents use; its
+tools (`extract_book`, `index_book`, `search`, …) key on integer book ids.
+`librarian-classify` and `librarian-enrich` are service-mode utilities — they
+read/write the `books` table.
 
 ## Data layout (default)
 
@@ -80,8 +80,6 @@ The defaults in `config/settings.yaml` assume:
 
 ```
 ~/data/librarian/
-  calibre/          # Calibre library (format conversion source)
-  converted/        # Extracted markdown/JSON by book id
+  converted/        # Extracted markdown/JSON artifacts (per content hash or book id)
   intake/ebooks/    # Upload/intake drop zone
-  intake/kindle/    # Optional Kindle intake
 ```

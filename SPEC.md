@@ -1,5 +1,14 @@
 # Librarian: Personal Knowledge Base for Agent Intelligence
 
+> **Status note (architecture has evolved):** This document is the original
+> design vision. Calibre has since been **removed entirely** — it is no longer
+> the hub, and `calibredb`/`ebook-convert` are not used. The system now has two
+> modes: a **service mode** (MCP server backed by a postgres `books` table +
+> pgvector, where the integer book id is canonical) and a **file mode** (CLI
+> `librarian extract <files>` / `index <dirs>`, content-hash identity, no DB).
+> Read this file for intent; see `AGENTS.md` and `docs/QUICKSTART.md` for how the
+> system actually works today.
+
 ## Executive Summary
 
 Librarian is a system for transforming a personal book library into a structured knowledge base that can bootstrap domain-specific AI agents. It treats your reading collection as an **epistemology made infrastructure**—agents don't just search documents, they inherit facets of your worldview.
@@ -189,9 +198,13 @@ A "Buffett Advisor" agent has:
 
 ### 3.2 Tool Selection
 
+> Note: the table below reflects the original plan. Calibre has been removed;
+> ingestion/registry is now the postgres `books` table (service mode) or the
+> filesystem (file mode).
+
 | Stage | Tool | Role | License |
 |-------|------|------|---------|
-| Ingestion/Hub | Calibre | Library management, format conversion | GPL |
+| Registry/Hub | postgres `books` table | Book registry, pipeline state | — |
 | Physical Scan | CZUR Scanner | Non-destructive book scanning | Commercial |
 | OCR | ABBYY FineReader | Text extraction from scans | Commercial |
 | PDF Extraction | Marker | PDF/EPUB → Markdown | Apache 2.0 |
@@ -206,25 +219,22 @@ A "Buffett Advisor" agent has:
 
 ## 4. Library Management
 
-### 4.1 Calibre as Central Hub
+### 4.1 Registry (no longer Calibre)
 
-Calibre serves as the canonical source of truth for library contents:
+The original design used Calibre as the central hub. **Calibre has been removed.**
+The library registry is now:
 
-```
-calibre-library/
-├── metadata.db              # Calibre's SQLite database
-├── Author Name/
-│   └── Book Title (123)/
-│       ├── cover.jpg
-│       ├── metadata.opf
-│       └── Book Title.epub
-```
+- **Service mode:** the postgres `books` table (`librarian.db`), which is the
+  canonical source of truth for book identity (integer id), metadata, and
+  pipeline status. The MCP server reads/writes it; agents reference books by id.
+- **File mode:** the filesystem itself — `librarian extract <files>` writes one
+  `output_path/{content_hash}/` directory per document with `metadata.json` as
+  the source of truth; `librarian index <dirs>` discovers and indexes them with
+  no database.
 
-**Key Calibre Operations:**
-- `calibredb add` - Import new books
-- `calibredb set_metadata` - Update metadata
-- `ebook-convert` - Format conversion
-- `calibredb list` - Export catalog
+Format conversion and DRM tooling that previously relied on `ebook-convert` /
+Calibre are gone; DRM'd Kindle books are handled via the screenshot-capture
+workflow (see `docs/kindle-screenshot-capture.md`).
 
 ### 4.2 Metadata Schema
 

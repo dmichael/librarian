@@ -1,22 +1,27 @@
 # Troubleshooting
 
-## “calibredb: command not found” / “ebook-convert: command not found”
+## PDF extraction produces no markdown / "marker: skipped"
 
-Calibre’s CLI tools aren’t installed (or aren’t on PATH). Install Calibre and confirm:
-
-```bash
-calibredb --version
-ebook-convert --version
-```
-
-## “marker_single not found”
-
-Install the PDF extraction dependency:
+PDF extraction calls a Marker HTTP service, not a local binary. Make sure
+`LIBRARIAN_SPARK_URL` points at a reachable Marker service:
 
 ```bash
-pip install marker-pdf
-marker_single --help
+echo "$LIBRARIAN_SPARK_URL"
+curl -s "$LIBRARIAN_SPARK_URL" -o /dev/null -w '%{http_code}\n'
 ```
+
+## No references/citations/sections extracted / "grobid: skipped"
+
+References, citations, and section headings come from GROBID. Set
+`GROBID_BASE_URL` to a reachable GROBID service:
+
+```bash
+echo "$GROBID_BASE_URL"
+curl -s "$GROBID_BASE_URL/api/isalive"
+```
+
+A 200 OK carrying a non-TEI body (e.g. an HTML error/queue page) now raises a
+clear error rather than silently producing empty artifacts.
 
 ## “ModuleNotFoundError: markdownify”
 
