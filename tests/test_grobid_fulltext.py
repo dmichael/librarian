@@ -240,6 +240,29 @@ def test_extract_fulltext_204_writes_empty_artifacts(tmp_path: Path, monkeypatch
     assert json.loads((grobid_dir / "figures.json").read_text()) == []
 
 
+def test_citations_captured_outside_div_p():
+    """Refs nested in <s> sentences and in figure captions must be captured."""
+    tei = """\
+<TEI xmlns="http://www.tei-c.org/ns/1.0">
+  <text><body>
+    <div>
+      <head>Results</head>
+      <p><s>As shown by <ref type="bibr" target="#b0">Smith (2006)</ref>.</s></p>
+    </div>
+    <figure xml:id="fig_0">
+      <figDesc>Adapted from <ref type="bibr" target="#b1">Jones (2010)</ref>.</figDesc>
+    </figure>
+  </body></text>
+</TEI>"""
+    result = parse_fulltext_tei(tei)
+    texts = {c.text for c in result.citations}
+    assert "Smith (2006)" in texts  # nested in <s>, missed by div>p walker before
+    assert "Jones (2010)" in texts  # inside <figDesc>, never under <div>/<p>
+
+    smith = next(c for c in result.citations if c.text == "Smith (2006)")
+    assert smith.section == "Results"
+
+
 def test_parse_fulltext_tei_rejects_non_tei():
     import pytest
     # A 200 OK carrying an HTML error/queue page must not parse to empty results.

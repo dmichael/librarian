@@ -339,47 +339,57 @@ def _build_ref_id_map(root: ET.Element) -> dict[str, str]:
 def _parse_citations(
     root: ET.Element, ref_id_map: dict[str, str]
 ) -> list[Citation]:
-    """Extract in-text citation anchors from body <ref type="bibr"> tags."""
+    """Extract every in-text <ref type="bibr"> anchor in the body.
+
+    Collects refs wherever they appear — including inside <s> sentence
+    elements, figure captions (<figDesc>), footnotes (<note>) and list items —
+    not only direct <div>/<p> children. For each ref the section comes from the
+    nearest enclosing <div> with a <head>, and the context from the nearest
+    enclosing text container.
+    """
     body = root.find(f".//{{{TEI_NSMAP}}}body")
     if body is None:
         return []
 
+    def tag(name: str) -> str:
+        return f"{{{TEI_NSMAP}}}{name}"
+
+    parent = {child: p for p in body.iter() for child in p}
+    context_tags = {tag(n) for n in ("p", "s", "figDesc", "note", "item")}
+    div_tag, head_tag = tag("div"), tag("head")
+
     citations: list[Citation] = []
-    _walk_divs_for_citations(body, citations, ref_id_map, section=None)
+    for ref in body.iter(tag("ref")):
+        if ref.attrib.get("type") != "bibr":
+            continue
+        cite_text = _text_or_none(ref) or ""
+        if not cite_text:
+            continue
+
+        context = ""
+        section: str | None = None
+        node = parent.get(ref)
+        while node is not None:
+            if not context and node.tag in context_tags:
+                context = _text_or_none(node) or ""
+            if section is None and node.tag == div_tag:
+                head = node.find(head_tag)
+                if head is not None:
+                    section = _text_or_none(head)
+            node = parent.get(node)
+
+        target = ref.attrib.get("target", "")
+        raw_id = target.lstrip("#") if target else None
+        ref_id = ref_id_map.get(raw_id) if raw_id else None
+
+        citations.append(Citation(
+            text=cite_text,
+            ref_id=ref_id,
+            context=context,
+            section=section,
+        ))
+
     return citations
-
-
-def _walk_divs_for_citations(
-    element: ET.Element,
-    out: list[Citation],
-    ref_id_map: dict[str, str],
-    section: str | None,
-) -> None:
-    for div in element.findall(f"{{{TEI_NSMAP}}}div"):
-        head = div.find(f"{{{TEI_NSMAP}}}head")
-        current_section = _text_or_none(head) if head is not None else section
-
-        for p in div.findall(f"{{{TEI_NSMAP}}}p"):
-            context = _text_or_none(p) or ""
-            for ref in p.findall(f"{{{TEI_NSMAP}}}ref"):
-                if ref.attrib.get("type") != "bibr":
-                    continue
-                cite_text = _text_or_none(ref) or ""
-                if not cite_text:
-                    continue
-
-                target = ref.attrib.get("target", "")
-                raw_id = target.lstrip("#") if target else None
-                ref_id = ref_id_map.get(raw_id) if raw_id else None
-
-                out.append(Citation(
-                    text=cite_text,
-                    ref_id=ref_id,
-                    context=context,
-                    section=current_section,
-                ))
-
-        _walk_divs_for_citations(div, out, ref_id_map, current_section)
 
 
 def _parse_sections(root: ET.Element) -> list[SectionHeading]:
