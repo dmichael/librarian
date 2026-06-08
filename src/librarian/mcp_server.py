@@ -371,8 +371,21 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
                 f"Running PDF extractors on {source.name} ({file_size_mb:.1f} MB)...",
             )
             t0 = time.monotonic()
-            extract_pdf(source, book_output)
+            errors, _meta = extract_pdf(source, book_output)
             extraction_duration = time.monotonic() - t0
+
+            # Marker is the primary content extractor; without its output there
+            # are no blocks/markdown to index. Treat that as a failure rather
+            # than reporting "extracted" and then failing confusingly at index
+            # time with "No extracted markdown found".
+            from librarian.files import marker_content_json
+            if marker_content_json(book_output) is None:
+                detail = "; ".join(errors) or "marker produced no content"
+                _update_book_status(
+                    book_id, "failed", f"extraction incomplete: {detail}",
+                    extraction_duration_s=extraction_duration,
+                )
+                return
 
         elif ext == ".epub":
             from librarian.epub_extract import extract_epub
@@ -1256,8 +1269,17 @@ def verify_book(book_id: int) -> dict:
         struct_issues = list(validation.get("warnings", []))
         if structure_source == "markdown":
             struct_issues.append("Using markdown fallback (no JSON blocks) — page numbers may be unreliable")
-        if ch_count == 0 and "No chapters detected" not in struct_issues:
-            struct_issues.append("No chapters detected — headers may not match known patterns (Chapter N, Rule No. N, Part N, Cycle N, N. Title)")
+
+        # Count sections. Articles/papers have sections but no chapters; a
+        # section-only document is well-structured, not broken. Works for both
+        # block-based (block_to_section) and chaptered (chapters[].sections).
+        section_titles = set(structure.block_to_section.values())
+        for ch in structure.chapters:
+            section_titles.update(s.title for s in ch.sections if s.title)
+        section_count = len(section_titles)
+
+        if ch_count == 0 and section_count == 0:
+            struct_issues.append("No chapters or sections detected — headers may not match known patterns")
 
         # Check chapter title quality
         chapters_without_title = [ch for ch in structure.chapters if not ch.title]
@@ -1267,8 +1289,9 @@ def verify_book(book_id: int) -> dict:
                 + ", ".join(f"Ch {ch.number}" for ch in chapters_without_title[:5])
             )
 
+        # Red only when there's no structure at all; a section-only doc is fine.
         struct_status = "green"
-        if ch_count == 0:
+        if ch_count == 0 and section_count == 0:
             struct_status = "red"
         elif struct_issues:
             struct_status = "yellow"
@@ -1286,6 +1309,7 @@ def verify_book(book_id: int) -> dict:
         results["structure"] = _assess(struct_status, {
             "source": structure_source,
             "chapter_count": ch_count,
+            "section_count": section_count,
             "chapters_with_pages": validation["chapters_with_pages"],
             "page_coverage": round(validation["page_coverage"], 2),
             "total_pages": total_pages,
@@ -1357,15 +1381,33 @@ def verify_book(book_id: int) -> dict:
         )
         indexed_chapter_nums = [row[0] for row in cur.fetchall()]
 
+        # Section coverage matters for chapterless/section-only docs (articles).
+        cur = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE metadata_->>'book_id' = %s "
+            f"  AND COALESCE(metadata_->>'section_title', '') != ''",
+            (str(book_id),),
+        )
+        chunks_with_section = cur.fetchone()[0]
+
         chapter_coverage = chunks_with_chapter / chunk_count if chunk_count else 0
+        section_coverage = chunks_with_section / chunk_count if chunk_count else 0
 
         completeness_issues = []
         if chunks_no_page and chunks_no_page > chunk_count * 0.3:
             completeness_issues.append(f"{chunks_no_page}/{chunk_count} chunks missing page numbers")
-        if chapter_coverage < 0.5:
+        # Chaptered docs should carry chapter metadata; chapterless docs
+        # (articles) should carry section metadata. Only flag the one that applies.
+        if ch_count > 0:
+            if chapter_coverage < 0.5:
+                completeness_issues.append(
+                    f"Only {chapter_coverage:.0%} of chunks have chapter metadata "
+                    f"({chunks_with_chapter}/{chunk_count})"
+                )
+        elif section_coverage < 0.5:
             completeness_issues.append(
-                f"Only {chapter_coverage:.0%} of chunks have chapter metadata "
-                f"({chunks_with_chapter}/{chunk_count})"
+                f"Only {section_coverage:.0%} of chunks have section metadata "
+                f"({chunks_with_section}/{chunk_count})"
             )
         page_span = (max_page - min_page + 1) if (min_page is not None and max_page is not None) else None
         if page_span and distinct_pages and distinct_pages < page_span * 0.5:
@@ -1416,6 +1458,8 @@ def verify_book(book_id: int) -> dict:
             "total_chunks": chunk_count,
             "chunks_with_chapter": chunks_with_chapter,
             "chapter_coverage": f"{chapter_coverage:.0%}",
+            "chunks_with_section": chunks_with_section,
+            "section_coverage": f"{section_coverage:.0%}",
             "indexed_chapters": indexed_chapter_nums,
             "page_range": f"{min_page}-{max_page}" if min_page is not None else "unknown",
             "distinct_pages": distinct_pages,
