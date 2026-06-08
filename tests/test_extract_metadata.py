@@ -1,0 +1,49 @@
+"""Tests for metadata gating in extract_pdf."""
+
+from pathlib import Path
+
+from librarian.extractors.grobid import CSLReference, FulltextResult
+from librarian import extract as extract_mod
+
+
+def _fake_result(*, with_refs: bool) -> FulltextResult:
+    return FulltextResult(
+        references=[CSLReference(id="b0", type="article-journal")] if with_refs else [],
+        citations=[],
+        sections=[],
+        figures=[],
+        header_title="Parsed Header Title",
+        header_authors=["A. Author"],
+        header_year=2020,
+    )
+
+
+def _run(tmp_path: Path, monkeypatch, *, with_refs: bool):
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    # Only GROBID runs (no Spark URL → marker skipped).
+    monkeypatch.delenv("LIBRARIAN_SPARK_URL", raising=False)
+    monkeypatch.setenv("GROBID_BASE_URL", "http://grobid.test:8070")
+    monkeypatch.setattr(
+        "librarian.extractors.grobid.extract_fulltext",
+        lambda *a, **k: _fake_result(with_refs=with_refs),
+    )
+
+    errors, meta = extract_mod.extract_pdf(pdf, tmp_path)
+    return meta
+
+
+def test_grobid_header_adopted_for_papers(tmp_path: Path, monkeypatch):
+    meta = _run(tmp_path, monkeypatch, with_refs=True)
+    assert meta.title == "Parsed Header Title"
+    assert meta.authors == ["A. Author"]
+    assert meta.year == 2020
+
+
+def test_grobid_header_ignored_without_references(tmp_path: Path, monkeypatch):
+    # No bibliography → likely not a paper → don't trust GROBID's front matter.
+    meta = _run(tmp_path, monkeypatch, with_refs=False)
+    assert meta.title is None
+    assert meta.authors == []
+    assert meta.year is None

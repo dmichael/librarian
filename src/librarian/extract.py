@@ -111,11 +111,16 @@ def extract_pdf(
                 f"{len(result.sections)} sections, {len(result.figures)} figures",
                 flush=True,
             )
+            # Only trust GROBID's header metadata when it parsed a bibliography
+            # (a reliable "this is a scholarly document" signal). On non-papers
+            # GROBID's front-matter parse is unreliable and would otherwise win
+            # the merge and set a wrong title on every chunk.
+            is_paper = bool(result.references)
             meta_parts.append(DocumentMetadata(
                 format="pdf",
-                title=result.header_title,
-                authors=result.header_authors,
-                year=result.header_year,
+                title=result.header_title if is_paper else None,
+                authors=result.header_authors if is_paper else [],
+                year=result.header_year if is_paper else None,
                 extractors_run=["grobid"],
             ))
         except Exception as e:
