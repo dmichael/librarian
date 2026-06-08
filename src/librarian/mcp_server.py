@@ -353,9 +353,6 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
       - PDF  → librarian.extract.extract_pdf (runs marker + grobid extractors,
                then the references domain builder)
       - EPUB → local ebooklib-based extractor (librarian.epub_extract)
-
-    Modal cloud extraction lives in librarian.cloud_extract and is no
-    longer the default; it stays available for ad-hoc CLI use.
     """
     import time
 

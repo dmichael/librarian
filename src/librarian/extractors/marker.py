@@ -8,10 +8,6 @@ allowed to know Marker's quirks.
 
 Backends:
   - "spark": POST to the Spark marker HTTP service (LAN GPU).
-
-The cloud (Modal) backend is a batch operation by nature and stays in
-librarian.cloud_extract for now; it will be aligned to this interface in
-a later pass.
 """
 
 from __future__ import annotations
@@ -79,11 +75,6 @@ def extract(
             raise ValueError("spark_url is required for backend='spark'")
         return _extract_via_spark(
             source, book_dir, spark_url=spark_url, timeout=timeout, write_html=write_html
-        )
-    elif backend == "cloud":
-        raise NotImplementedError(
-            "marker cloud backend is not yet exposed through extract(); "
-            "use librarian.cloud_extract.extract_books_cloud for batch runs"
         )
     else:
         raise ValueError(f"Unknown marker backend: {backend!r}")

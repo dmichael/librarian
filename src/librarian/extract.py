@@ -1,15 +1,13 @@
-"""Extraction functions for PDF, EPUB, and Kindle formats.
+"""Extraction functions for PDF and EPUB formats.
 
 Pure business logic — no CLI, no Calibre. Each function takes a source
 file and an output directory, writes artifacts, and returns.
 
 CLI lives in librarian.cli.extract.
-Calibre pipeline glue lives in librarian.calibre.extract.
 """
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -26,7 +24,6 @@ from librarian.document_metadata import (
 )
 from librarian.files import marker_dir
 
-KINDLE_FORMATS = [".azw3", ".azw", ".mobi", ".kfx"]
 
 
 def extract(source: Path, output_dir: Path) -> tuple[list[str], DocumentMetadata]:
@@ -40,14 +37,6 @@ def extract(source: Path, output_dir: Path) -> tuple[list[str], DocumentMetadata
 
     if suffix == ".pdf":
         errors, meta = extract_pdf(source, output_dir)
-    elif suffix in KINDLE_FORMATS:
-        epub_path = convert_to_epub(source, output_dir)
-        if epub_path is None:
-            meta = DocumentMetadata()
-            errors = [f"ebook-convert failed for {source}"]
-            return errors, meta
-        errors, meta = _extract_epub_with_metadata(epub_path, output_dir)
-        meta.format = suffix.lstrip(".")
     elif suffix == ".epub":
         errors, meta = _extract_epub_with_metadata(source, output_dir)
     else:
@@ -218,22 +207,3 @@ def extract_epub(source: Path, output_dir: Path) -> dict:
     return epub_meta
 
 
-def convert_to_epub(source: Path, output_dir: Path, name: str | None = None) -> Path | None:
-    """Convert a file to EPUB using Calibre's ebook-convert."""
-    epub_name = name or source.stem
-    epub_path = output_dir / f"{epub_name}.epub"
-
-    result = subprocess.run(
-        ["ebook-convert", str(source), str(epub_path)],
-        capture_output=True, text=True,
-    )
-
-    if result.returncode != 0:
-        print(f"ebook-convert failed: {result.stderr}", file=sys.stderr)
-        return None
-
-    if not epub_path.exists():
-        print("ebook-convert produced no output", file=sys.stderr)
-        return None
-
-    return epub_path

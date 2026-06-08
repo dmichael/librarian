@@ -34,7 +34,6 @@ def load_config() -> dict:
 
     if data_root := os.getenv("LIBRARIAN_DATA_ROOT"):
         config["output_path"] = f"{data_root}/converted"
-        config["library_path"] = f"{data_root}/calibre"
         config["intake_path"] = f"{data_root}/intake/ebooks"
 
     if public_url := os.getenv("LIBRARIAN_PUBLIC_URL"):

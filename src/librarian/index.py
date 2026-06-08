@@ -4,7 +4,6 @@ Pure business logic — no CLI, no Calibre. Functions here take
 content and metadata, create nodes, and write to vector stores.
 
 CLI lives in librarian.cli.index.
-Calibre pipeline glue lives in librarian.calibre.index.
 """
 
 import json
@@ -75,6 +74,7 @@ from librarian.structure import (
     validate_structure,
     get_context_for_page,
     get_chapter_for_block,
+    get_section_for_block,
 )
 
 
@@ -622,10 +622,13 @@ def index_book(
             chapter = get_chapter_for_block(structure, block_idx) if block_idx is not None else None
 
             if chapter:
+                section = get_section_for_block(structure, block_idx) if block_idx is not None else None
                 node.metadata[META_CHAPTER_NUM] = chapter.number
                 node.metadata[META_CHAPTER_TITLE] = chapter.title
-                node.metadata[META_SECTION_TITLE] = ""  # TODO: section tracking
-                node.metadata[META_BREADCRUMB] = chapter.breadcrumb
+                node.metadata[META_SECTION_TITLE] = section or ""
+                node.metadata[META_BREADCRUMB] = (
+                    f"{chapter.breadcrumb} > {section}" if section else chapter.breadcrumb
+                )
             else:
                 # Fallback to page-based lookup
                 page = node.metadata.get(META_PAGE)

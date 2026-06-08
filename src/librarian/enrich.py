@@ -1,12 +1,11 @@
 """Metadata enrichment from converted content.
 
 Extracts title, author, publisher, year, and ISBN from converted full.json
-and updates Calibre metadata.
+and updates the book record.
 """
 
 import json
 import re
-import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -205,7 +204,7 @@ def extract_metadata(book_id: int, config: dict = None) -> dict:
     """Extract metadata from converted full.json.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         config: Optional config dict
 
     Returns:
@@ -259,38 +258,30 @@ def extract_metadata(book_id: int, config: dict = None) -> dict:
     }
 
 
-def get_calibre_metadata(book_id: int, config: dict = None) -> dict | None:
-    """Get current Calibre metadata for a book."""
+def get_current_metadata(book_id: int, config: dict = None) -> dict | None:
+    """Get current metadata for a book from the database.
+
+    Authors are returned as an ampersand-joined string to match the shape
+    the comparison logic expects.
+    """
+    from librarian.db import get_book_metadata
+
     if config is None:
         config = load_config()
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
 
-    cmd = [
-        "calibredb", "list",
-        "--library-path", str(library_path),
-        "--search", f"id:{book_id}",
-        "--fields", "id,title,authors,publisher,pubdate,isbn",
-        "--for-machine",
-    ]
+    book = get_book_metadata([book_id], config).get(book_id)
+    if not book:
+        return None
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-        if data:
-            book = data[0]
-            return {
-                "book_id": book.get("id"),
-                "title": book.get("title"),
-                "authors": book.get("authors"),
-                "publisher": book.get("publisher"),
-                "pubdate": book.get("pubdate"),
-                "isbn": book.get("isbn"),
-            }
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, IndexError):
-        pass
-    return None
+    year = book.get("year")
+    return {
+        "book_id": book_id,
+        "title": book.get("title"),
+        "authors": " & ".join(book.get("authors") or []),
+        "publisher": book.get("publisher"),
+        "pubdate": str(year) if year else None,
+        "isbn": book.get("isbn"),
+    }
 
 
 def needs_enrichment(book_id: int, config: dict = None) -> tuple[bool, list[str]]:
@@ -298,7 +289,7 @@ def needs_enrichment(book_id: int, config: dict = None) -> tuple[bool, list[str]
 
     Returns: (needs_enrichment, reasons)
     """
-    meta = get_calibre_metadata(book_id, config)
+    meta = get_current_metadata(book_id, config)
     if not meta:
         return True, ["no metadata found"]
 
@@ -322,39 +313,36 @@ def needs_enrichment(book_id: int, config: dict = None) -> tuple[bool, list[str]
 
 
 def apply_metadata(book_id: int, metadata: dict, config: dict = None) -> tuple[bool, str]:
-    """Update Calibre with extracted metadata.
+    """Update the book row with extracted metadata.
 
     Returns: (success, message)
     """
+    from librarian.db import update_book_fields
+
     if config is None:
         config = load_config()
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
 
-    cmd = ["calibredb", "set_metadata", str(book_id), "--library-path", str(library_path)]
-
-    # Add fields that have values
+    fields = {}
     if metadata.get("title"):
-        cmd.extend(["--field", f"title:{metadata['title']}"])
+        fields["title"] = metadata["title"]
     if metadata.get("authors"):
-        cmd.extend(["--field", f"authors:{metadata['authors']}"])
+        authors = metadata["authors"]
+        fields["authors"] = authors if isinstance(authors, list) else [
+            a.strip() for a in re.split(r"\s*&\s*", authors) if a.strip()
+        ]
     if metadata.get("publisher"):
-        cmd.extend(["--field", f"publisher:{metadata['publisher']}"])
+        fields["publisher"] = metadata["publisher"]
     if metadata.get("year"):
-        cmd.extend(["--field", f"pubdate:{metadata['year']}-01-01"])
+        fields["year"] = metadata["year"]
     if metadata.get("isbn"):
-        # ISBN goes in identifiers field with format identifiers:isbn:XXXX
-        cmd.extend(["--field", f"identifiers:isbn:{metadata['isbn']}"])
+        fields["isbn"] = metadata["isbn"]
 
-    if len(cmd) == 5:  # No fields to update
+    if not fields:
         return False, "no metadata to apply"
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return True, "metadata updated"
-        return False, result.stderr or "calibredb failed"
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
+    if update_book_fields(book_id, config, **fields):
+        return True, "metadata updated"
+    return False, f"book {book_id} not found"
 
 
 def enrich_book(book_id: int, config: dict = None, dry_run: bool = False,
@@ -362,9 +350,9 @@ def enrich_book(book_id: int, config: dict = None, dry_run: bool = False,
     """Full enrichment flow for one book.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         config: Optional config dict
-        dry_run: If True, don't actually update Calibre
+        dry_run: If True, don't actually update the book record
         force: If True, enrich even if metadata looks complete
         min_confidence: Minimum confidence to apply metadata
 
@@ -398,7 +386,7 @@ def enrich_book(book_id: int, config: dict = None, dry_run: bool = False,
             return result
 
     # Get current metadata
-    before = get_calibre_metadata(book_id, config)
+    before = get_current_metadata(book_id, config)
     result["before"] = before
 
     # Extract metadata from content
@@ -523,16 +511,16 @@ def format_result(result: dict) -> str:
 
 
 def validate_metadata(book_id: int, config: dict = None) -> dict:
-    """Cross-reference Calibre metadata against external sources via ISBN.
+    """Cross-reference current metadata against external sources via ISBN.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         config: Optional config dict
 
     Returns:
         {
             "book_id": int,
-            "calibre": {"title": ..., "authors": ..., ...},
+            "current": {"title": ..., "authors": ..., ...},
             "external": {"title": ..., "authors": ..., "source": ...},
             "discrepancies": ["authors", "title", ...],
             "recommendation": "update" | "keep" | "review",
@@ -544,23 +532,23 @@ def validate_metadata(book_id: int, config: dict = None) -> dict:
 
     result = {
         "book_id": book_id,
-        "calibre": None,
+        "current": None,
         "external": None,
         "discrepancies": [],
         "recommendation": "keep",
         "error": None,
     }
 
-    # 1. Get current Calibre metadata
-    calibre_meta = get_calibre_metadata(book_id, config)
-    if not calibre_meta:
-        result["error"] = "calibre_metadata_not_found"
+    # 1. Get current metadata
+    current_meta = get_current_metadata(book_id, config)
+    if not current_meta:
+        result["error"] = "current_metadata_not_found"
         return result
 
-    result["calibre"] = calibre_meta
+    result["current"] = current_meta
 
     # 2. Extract ISBN from identifiers
-    isbn = calibre_meta.get("isbn")
+    isbn = current_meta.get("isbn")
     if not isbn:
         result["error"] = "no_isbn"
         return result
@@ -577,27 +565,27 @@ def validate_metadata(book_id: int, config: dict = None) -> dict:
     discrepancies = []
 
     # Compare title (case-insensitive, ignore minor differences)
-    calibre_title = (calibre_meta.get("title") or "").lower().strip()
+    current_title = (current_meta.get("title") or "").lower().strip()
     external_title = (external.title or "").lower().strip()
-    if external_title and calibre_title != external_title:
+    if external_title and current_title != external_title:
         # Allow partial match (title might include subtitle)
-        if external_title not in calibre_title and calibre_title not in external_title:
+        if external_title not in current_title and current_title not in external_title:
             discrepancies.append("title")
 
     # Compare authors
-    calibre_authors = calibre_meta.get("authors", "")
-    if isinstance(calibre_authors, str):
-        calibre_authors = [a.strip() for a in calibre_authors.split("&")] if calibre_authors else []
+    current_authors = current_meta.get("authors", "")
+    if isinstance(current_authors, str):
+        current_authors = [a.strip() for a in current_authors.split("&")] if current_authors else []
 
-    if external.authors and not compare_authors(calibre_authors, external.authors):
+    if external.authors and not compare_authors(current_authors, external.authors):
         discrepancies.append("authors")
 
     # Compare publisher
-    calibre_publisher = (calibre_meta.get("publisher") or "").lower().strip()
+    current_publisher = (current_meta.get("publisher") or "").lower().strip()
     external_publisher = (external.publisher or "").lower().strip()
-    if external_publisher and calibre_publisher and calibre_publisher != external_publisher:
+    if external_publisher and current_publisher and current_publisher != external_publisher:
         # Allow partial match (publisher names vary)
-        if external_publisher not in calibre_publisher and calibre_publisher not in external_publisher:
+        if external_publisher not in current_publisher and current_publisher not in external_publisher:
             discrepancies.append("publisher")
 
     result["discrepancies"] = discrepancies
@@ -616,12 +604,12 @@ def validate_metadata(book_id: int, config: dict = None) -> dict:
 
 
 def apply_validated_metadata(book_id: int, validation_result: dict, config: dict = None) -> tuple[bool, str]:
-    """Apply external metadata to Calibre for validated discrepancies.
+    """Apply external metadata to the book record for validated discrepancies.
 
     Only applies fields that were flagged as discrepancies.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         validation_result: Result from validate_metadata()
         config: Optional config dict
 
@@ -643,31 +631,23 @@ def apply_validated_metadata(book_id: int, validation_result: dict, config: dict
     if not external or not discrepancies:
         return False, "no external data or discrepancies"
 
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
-    cmd = ["calibredb", "set_metadata", str(book_id), "--library-path", str(library_path)]
+    from librarian.db import update_book_fields
 
+    fields = {}
     # Only update fields with discrepancies
     if "title" in discrepancies and external.get("title"):
-        cmd.extend(["--field", f"title:{external['title']}"])
-
+        fields["title"] = external["title"]
     if "authors" in discrepancies and external.get("authors"):
-        # Join multiple authors with " & "
-        authors_str = " & ".join(external["authors"])
-        cmd.extend(["--field", f"authors:{authors_str}"])
-
+        fields["authors"] = list(external["authors"])
     if "publisher" in discrepancies and external.get("publisher"):
-        cmd.extend(["--field", f"publisher:{external['publisher']}"])
+        fields["publisher"] = external["publisher"]
 
-    if len(cmd) == 5:  # No fields to update
+    if not fields:
         return False, "no fields to update"
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return True, f"updated: {', '.join(discrepancies)}"
-        return False, result.stderr or "calibredb failed"
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
+    if update_book_fields(book_id, config, **fields):
+        return True, f"updated: {', '.join(discrepancies)}"
+    return False, f"book {book_id} not found"
 
 
 def format_validation_result(result: dict) -> str:
@@ -679,14 +659,14 @@ def format_validation_result(result: dict) -> str:
         lines.append(f"Error: {result['error']}")
         return "\n".join(lines)
 
-    calibre = result.get("calibre", {})
+    current = result.get("current", {})
     external = result.get("external", {})
 
-    lines.append(f"\nCalibre metadata:")
-    lines.append(f"  Title:     {calibre.get('title', 'N/A')}")
-    lines.append(f"  Authors:   {calibre.get('authors', 'N/A')}")
-    lines.append(f"  Publisher: {calibre.get('publisher', 'N/A')}")
-    lines.append(f"  ISBN:      {calibre.get('isbn', 'N/A')}")
+    lines.append(f"\nCurrent metadata:")
+    lines.append(f"  Title:     {current.get('title', 'N/A')}")
+    lines.append(f"  Authors:   {current.get('authors', 'N/A')}")
+    lines.append(f"  Publisher: {current.get('publisher', 'N/A')}")
+    lines.append(f"  ISBN:      {current.get('isbn', 'N/A')}")
 
     if external:
         lines.append(f"\nExternal metadata ({external.get('source', 'unknown')}):")
@@ -709,26 +689,21 @@ def format_validation_result(result: dict) -> str:
 
 def list_books_with_isbn(config: dict = None) -> list[int]:
     """List all books that have an ISBN for validation."""
+    from librarian.db import Book, get_session
+
     if config is None:
         config = load_config()
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
 
-    cmd = [
-        "calibredb", "list",
-        "--library-path", str(library_path),
-        "--search", "isbn:true",
-        "--fields", "id",
-        "--for-machine",
-    ]
-
+    session = get_session(config)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            return []
-        data = json.loads(result.stdout)
-        return [book["id"] for book in data]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        return []
+        rows = (
+            session.query(Book.id)
+            .filter(Book.isbn.isnot(None), Book.isbn != "")
+            .all()
+        )
+        return [row[0] for row in rows]
+    finally:
+        session.close()
 
 
 def parse_validate_args():
@@ -752,7 +727,7 @@ def parse_validate_args():
         elif arg in ("-h", "--help"):
             print("""Usage: librarian-validate [OPTIONS]
 
-Cross-reference Calibre metadata against external sources (Google Books, OpenLibrary).
+Cross-reference current metadata against external sources (Google Books, OpenLibrary).
 
 Options:
   --book-id ID   Validate a specific book
@@ -802,13 +777,13 @@ def validate_main():
 
             if discrepancies:
                 stats["discrepancies"] += 1
-                calibre = result.get("calibre", {})
+                current = result.get("current", {})
                 external = result.get("external", {})
 
-                print(f"[{book_id}] {calibre.get('title', 'Unknown')}")
+                print(f"[{book_id}] {current.get('title', 'Unknown')}")
                 print(f"  Discrepancies: {', '.join(discrepancies)}")
                 if "authors" in discrepancies:
-                    print(f"    Calibre:  {calibre.get('authors')}")
+                    print(f"    Current:  {current.get('authors')}")
                     print(f"    External: {external.get('authors')} ({external.get('source')})")
 
                 if args["fix"] and result["recommendation"] == "update":
@@ -873,7 +848,7 @@ def parse_args():
         elif arg in ("-h", "--help"):
             print("""Usage: librarian-enrich [OPTIONS]
 
-Enrich Calibre metadata from converted book content.
+Enrich metadata from converted book content.
 
 Options:
   --book-id ID   Enrich a specific book

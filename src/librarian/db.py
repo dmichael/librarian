@@ -87,6 +87,71 @@ def get_session(config: dict | None = None) -> Session:
     return _session_factory()
 
 
+def book_to_dict(book: "Book") -> dict:
+    """Flatten a Book row into a plain metadata dict.
+
+    Exposes the common columns plus publisher/year pulled from the JSONB
+    metadata blob, so callers don't need a live session to read fields.
+    """
+    meta = dict(book.metadata_ or {})
+    return {
+        "id": book.id,
+        "title": book.title or "",
+        "authors": list(book.authors or []),
+        "isbn": book.isbn or meta.get("isbn"),
+        "publisher": meta.get("publisher"),
+        "year": meta.get("year"),
+        "subjects": list(book.subjects or []),
+        "status": book.status,
+        "format": book.format,
+        "source_path": book.source_path,
+        "converted_path": book.converted_path,
+    }
+
+
+def get_book_metadata(
+    book_ids: list[int] | None = None, config: dict | None = None
+) -> dict[int, dict]:
+    """Fetch book metadata from the books table, keyed by id.
+
+    Replaces the old calibredb lookups. Pass book_ids to restrict, or None
+    for the whole library.
+    """
+    session = get_session(config)
+    try:
+        query = session.query(Book)
+        if book_ids is not None:
+            query = query.filter(Book.id.in_(list(book_ids)))
+        return {book.id: book_to_dict(book) for book in query.all()}
+    finally:
+        session.close()
+
+
+def update_book_fields(book_id: int, config: dict | None = None, **fields) -> bool:
+    """Update columns on a single book; returns False if the book is missing.
+
+    Unknown keys are merged into the JSONB metadata blob rather than set as
+    columns, so callers can stash publisher/year/etc. without a schema change.
+    """
+    session = get_session(config)
+    try:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if book is None:
+            return False
+        column_names = {c.name for c in Book.__table__.columns}
+        meta = dict(book.metadata_ or {})
+        for key, value in fields.items():
+            if key in column_names:
+                setattr(book, key, value)
+            else:
+                meta[key] = value
+        book.metadata_ = meta
+        session.commit()
+        return True
+    finally:
+        session.close()
+
+
 def init_db(config: dict | None = None):
     """Create all tables if they don't exist.
 

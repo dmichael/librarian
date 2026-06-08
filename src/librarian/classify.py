@@ -1,7 +1,6 @@
 """Classify books by subject using LLM analysis."""
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -123,31 +122,18 @@ Your response (JSON array only):"""
     return []
 
 
-def get_calibre_books(library_path: Path) -> dict[int, dict]:
-    """Get book metadata from Calibre."""
-    cmd = [
-        "calibredb", "list",
-        "--library-path", str(library_path),
-        "--fields", "id,title,authors,*subjects",
-        "--for-machine",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        return {}
+def get_books(config: dict) -> dict[int, dict]:
+    """Get book metadata from the database, keyed by id."""
+    from librarian.db import get_book_metadata
 
-    books = json.loads(result.stdout)
-    return {book["id"]: book for book in books}
+    return get_book_metadata(config=config)
 
 
-def update_calibre_subjects(library_path: Path, book_id: int, subjects: list[str]):
-    """Store subjects in Calibre custom column."""
-    subjects_str = ",".join(subjects)
-    cmd = [
-        "calibredb", "set_custom",
-        "--library-path", str(library_path),
-        "subjects", str(book_id), subjects_str,
-    ]
-    subprocess.run(cmd, capture_output=True)
+def save_subjects(book_id: int, subjects: list[str], config: dict) -> None:
+    """Store subjects on the book row."""
+    from librarian.db import update_book_fields
+
+    update_book_fields(book_id, config, subjects=subjects)
 
 
 def interactive_approve(title: str, suggestions: list[str]) -> list[str]:
@@ -225,11 +211,10 @@ def main():
     args = parse_args()
 
     config = load_config()
-    library_path = expand_path(config["library_path"])
     output_path = expand_path(config["output_path"])
     sample_size = config.get("classification", {}).get("sample_size", 5000)
 
-    calibre_books = get_calibre_books(library_path)
+    books = get_books(config)
 
     # Find extracted books
     extracted_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name.isdigit()]
@@ -241,13 +226,13 @@ def main():
         if args["book_ids"] and book_id not in args["book_ids"]:
             continue
 
-        book_meta = calibre_books.get(book_id, {})
+        book_meta = books.get(book_id, {})
         title = book_meta.get("title", "Unknown")
-        existing_subjects = book_meta.get("*subjects", "")
+        existing_subjects = book_meta.get("subjects") or []
 
         # Skip if already classified (unless --force)
         if existing_subjects and not args["force"]:
-            print(f"[{book_id}] {title}: Already classified ({existing_subjects}), skipping")
+            print(f"[{book_id}] {title}: Already classified ({', '.join(existing_subjects)}), skipping")
             continue
 
         print(f"\n[{book_id}] {title}: Analyzing...")
@@ -276,7 +261,7 @@ def main():
             approved = interactive_approve(title, suggestions)
 
         if approved:
-            update_calibre_subjects(library_path, book_id, approved)
+            save_subjects(book_id, approved, config)
             print(f"[{book_id}] Saved subjects: {approved}")
         else:
             print(f"[{book_id}] Skipped")

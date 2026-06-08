@@ -52,14 +52,9 @@ serve = [
 
 [project.scripts]
 librarian = "librarian.cli:main"
-# Legacy hyphenated names (still work)
-librarian-pipeline = "librarian.intake:pipeline_main"
-librarian-init = "librarian.intake:init_main"
-librarian-intake = "librarian.intake:intake_main"
+# Hyphenated aliases (also reachable via the `librarian` dispatcher)
 librarian-extract = "librarian.cli.extract:main"
-librarian-extract-cloud = "librarian.cloud_extract:main"
 librarian-index = "librarian.cli.index:main"
-librarian-status = "librarian.calibre:status_main"
 # Query and search
 librarian-query = "librarian.query:main"
 librarian-ask = "librarian.ask:main"
@@ -72,10 +67,6 @@ librarian-benchmark = "librarian.benchmark:main"
 librarian-stats = "librarian.stats:main"
 librarian-toc = "librarian.stats:toc_main"
 librarian-references = "librarian.extractors.grobid:main"
-# Legacy (deprecated)
-librarian-ingest = "librarian.ingest:main"
-librarian-kindle-sync = "librarian.ingest:kindle_sync_main"
-librarian-kindle-extract = "librarian.kindle_extract:main"
 # MCP server
 librarian-serve = "librarian.mcp_server:main"
 

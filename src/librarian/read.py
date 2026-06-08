@@ -8,7 +8,6 @@ Provides functions to read book content by page, enabling agents to:
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -50,46 +49,31 @@ def _load_book_json(book_id: int, config: dict = None) -> dict | None:
         return json.load(f)
 
 
-def _get_calibre_metadata(book_ids: list[int] | None = None, config: dict = None) -> dict:
-    """Get metadata for books from Calibre.
+def _get_book_metadata(book_ids: list[int] | None = None, config: dict = None) -> dict:
+    """Get metadata for books from the database.
 
-    Returns a dict mapping book_id -> {title, authors, ...}
+    Returns a dict mapping book_id -> {title, authors}.
     """
+    from librarian.db import get_book_metadata
+
     if config is None:
         config = load_config()
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
 
-    cmd = [
-        "calibredb", "list",
-        "--library-path", str(library_path),
-        "--fields", "id,title,authors",
-        "--for-machine",
-    ]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return {}
-        data = json.loads(result.stdout)
-        # Convert list to dict keyed by id
-        metadata = {}
-        for book in data:
-            bid = book.get("id")
-            if book_ids is None or bid in book_ids:
-                metadata[bid] = {
-                    "title": book.get("title", "Unknown"),
-                    "authors": book.get("authors", "Unknown"),
-                }
-        return metadata
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
-        return {}
+    books = get_book_metadata(book_ids, config)
+    return {
+        bid: {
+            "title": meta.get("title") or "Unknown",
+            "authors": ", ".join(meta.get("authors") or []) or "Unknown",
+        }
+        for bid, meta in books.items()
+    }
 
 
 def read_page(book_id: int, page: int, config: dict = None) -> dict | None:
     """Get all content from a specific page.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         page: Page number (1-indexed as in PDF)
         config: Optional config dict
 
@@ -112,8 +96,8 @@ def read_page(book_id: int, page: int, config: dict = None) -> dict | None:
     if not page_blocks:
         return None
 
-    # Get book title from Calibre
-    metadata = _get_calibre_metadata([book_id], config)
+    # Get book title
+    metadata = _get_book_metadata([book_id], config)
     title = metadata.get(book_id, {}).get("title", f"Book {book_id}")
 
     return {
@@ -135,7 +119,7 @@ def read_pages(book_id: int, start_page: int, end_page: int, config: dict = None
     """Get content from a page range.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         start_page: First page (inclusive)
         end_page: Last page (inclusive)
         config: Optional config dict
@@ -174,7 +158,7 @@ def read_pages(book_id: int, start_page: int, end_page: int, config: dict = None
         return None
 
     # Get book title
-    metadata = _get_calibre_metadata([book_id], config)
+    metadata = _get_book_metadata([book_id], config)
     title = metadata.get(book_id, {}).get("title", f"Book {book_id}")
 
     return {
@@ -190,7 +174,7 @@ def get_context(book_id: int, page: int, window: int = 2, config: dict = None) -
     """Get content from page and surrounding pages.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         page: Center page number
         window: Number of pages before and after (default 2)
         config: Optional config dict
@@ -236,8 +220,8 @@ def list_books(config: dict = None) -> list[dict]:
     if not book_ids:
         return []
 
-    # Get metadata from Calibre
-    metadata = _get_calibre_metadata(book_ids, config)
+    # Get metadata from the database
+    metadata = _get_book_metadata(book_ids, config)
 
     books = []
     for book_id in sorted(book_ids):
@@ -255,7 +239,7 @@ def search_book(book_id: int, query: str, config: dict = None) -> dict | None:
     """Search for text within a book and return matching pages.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         query: Search term (case-insensitive)
         config: Optional config dict
 
@@ -294,7 +278,7 @@ def search_book(book_id: int, query: str, config: dict = None) -> dict | None:
         return None
 
     # Get book title
-    metadata = _get_calibre_metadata([book_id], config)
+    metadata = _get_book_metadata([book_id], config)
     title = metadata.get(book_id, {}).get("title", f"Book {book_id}")
 
     return {
@@ -319,7 +303,7 @@ def find_references(book_id: int, config: dict = None) -> dict | None:
     - Known academic publishers
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         config: Optional config dict
 
     Returns:
@@ -341,7 +325,7 @@ def find_references(book_id: int, config: dict = None) -> dict | None:
     blocks = data.get("blocks", [])
 
     # Get book title
-    metadata = _get_calibre_metadata([book_id], config)
+    metadata = _get_book_metadata([book_id], config)
     title = metadata.get(book_id, {}).get("title", f"Book {book_id}")
 
     result = {
@@ -446,7 +430,7 @@ def read_first_pages(book_id: int, count: int = 5, config: dict = None) -> dict 
     """Read the first N pages of content from a book.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         count: Number of pages to read (default 5)
         config: Optional config dict
 
@@ -475,7 +459,7 @@ def read_chapter(book_id: int, chapter: str | int, config: dict = None) -> dict 
     """Read content starting from a specific chapter.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         chapter: Chapter name (fuzzy match) or number (1-indexed)
         config: Optional config dict
 
@@ -528,7 +512,7 @@ def get_book_structure(book_id: int, config: dict = None) -> dict | None:
     """Get table of contents / chapter structure for a book.
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         config: Optional config dict
 
     Returns:
@@ -546,7 +530,7 @@ def get_book_structure(book_id: int, config: dict = None) -> dict | None:
     blocks = data.get("blocks", [])
 
     # Get book title
-    metadata = _get_calibre_metadata([book_id], config)
+    metadata = _get_book_metadata([book_id], config)
     title = metadata.get(book_id, {}).get("title", f"Book {book_id}")
 
     # Find section headers to build structure

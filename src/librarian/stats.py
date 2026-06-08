@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from librarian.config import expand_path, load_config
+from librarian.config import load_config
 from librarian.vectorstore import get_vector_store, get_collection_names
 
 
@@ -51,10 +51,10 @@ def get_collection_stats(config: dict) -> dict[str, dict]:
 def get_indexed_books(config: dict) -> list[dict]:
     """Get list of books that have been indexed.
 
-    Cross-references vector store book IDs with Calibre metadata
-    for accurate author/title info.
+    Cross-references vector store book IDs with the books table for
+    accurate author/title info.
     """
-    from librarian import calibre
+    from librarian.db import get_book_metadata
 
     store = get_vector_store(config)
     collection_names = get_collection_names(config)
@@ -62,29 +62,22 @@ def get_indexed_books(config: dict) -> list[dict]:
     collection_name = collection_names.get("full", "librarian_full")
     indexed_ids = store.get_indexed_ids(collection_name)
 
-    # Get Calibre metadata for these books
-    library_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
-    calibre_list = calibre.get_all_books(library_path)
-    calibre_books = {book["id"]: book for book in calibre_list}
+    db_books = get_book_metadata(list(indexed_ids), config)
 
     books = []
     for book_id in sorted(indexed_ids):
-        if book_id in calibre_books:
-            book = calibre_books[book_id]
-            authors = book.get("authors", "")
-            # Handle both string and list formats
-            if isinstance(authors, list):
-                authors = ", ".join(authors)
+        book = db_books.get(book_id)
+        if book is not None:
             books.append({
                 "book_id": book_id,
-                "title": book.get("title", "Unknown"),
-                "authors": authors or "",
+                "title": book.get("title") or "Unknown",
+                "authors": ", ".join(book.get("authors") or []),
             })
         else:
-            # Book no longer in Calibre but still indexed
+            # Book no longer in the database but still indexed
             books.append({
                 "book_id": book_id,
-                "title": "(unknown - not in Calibre)",
+                "title": "(unknown - not in database)",
                 "authors": "",
             })
 
