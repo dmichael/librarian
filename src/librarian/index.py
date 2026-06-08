@@ -111,6 +111,8 @@ def load_extracted_blocks(book_dir: Path) -> list[dict] | None:
     Returns list of blocks with text and metadata, or None if not available.
     Each block contains:
         - text: Plain text content (converted from HTML)
+        - html: Original block HTML (kept so equation extraction can recover
+          clean LaTeX from <math> markup; marker leaves text empty for equations)
         - page: Page number
         - block_type: SectionHeader, Text, Table, etc.
         - block_id: Unique identifier
@@ -146,6 +148,7 @@ def load_extracted_blocks(book_dir: Path) -> list[dict] | None:
 
         blocks.append({
             "text": text,
+            "html": html,
             "page": block.get("page"),
             "block_type": block.get("block_type", "Text"),
             "block_id": block.get("id", ""),
