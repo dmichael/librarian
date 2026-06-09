@@ -145,6 +145,7 @@ def search(
     book_id: int | None = None,
     library: str | None = None,
     subjects: list[str] | None = None,
+    block_type: str | None = None,
 ) -> list[dict]:
     """Search the library. Returns ranked passages with title, page, chapter, and score.
 
@@ -154,6 +155,7 @@ def search(
         book_id: Restrict search to a specific book ID
         library: Restrict search to a named library
         subjects: Filter by subject tags (e.g. ["psychology/*"])
+        block_type: Restrict to a marker block type (e.g. "Code", "Table", "ListGroup")
     """
     from librarian.query import retrieve
 
@@ -169,6 +171,7 @@ def search(
         top_k=top_k,
         subjects=subjects,
         library=library,
+        block_type=block_type,
     )
 
     # If book_id filter requested, apply post-hoc (pgvector metadata filter)

@@ -37,7 +37,7 @@ long-form artifacts can all be tracked through the same lifecycle.
 
 | Tool | Description |
 |------|-------------|
-| `search` | Semantic search across indexed books. Filter by subject, library, or book_id. |
+| `search` | Semantic search across indexed books. Filter by subject, library, book_id, or block_type (use `Code` for code examples). |
 | `text_search` | Literal substring search for part numbers, error codes, exact strings. |
 | `upload_book` | Returns the HTTP upload endpoint URL and a curl example. |
 | `ingest_book` | Register a book already on the data volume (by path). |
