@@ -18,7 +18,6 @@ from mcp.server.fastmcp import FastMCP
 from librarian import catalog, pipeline
 from librarian.config import load_config
 from librarian.metadata_types import (
-    META_BOOK_ID,
     build_search_result_row,
     build_text_search_result_row,
 )
@@ -80,7 +79,6 @@ def search(
 
     config = _get_config()
 
-    # book_id filter uses metadata filter on the retriever
     nodes = retrieve(
         query,
         config=config,
@@ -88,11 +86,8 @@ def search(
         subjects=subjects,
         library=library,
         block_type=block_type,
+        book_id=book_id,
     )
-
-    # If book_id filter requested, apply post-hoc (pgvector metadata filter)
-    if book_id is not None:
-        nodes = [n for n in nodes if n.metadata.get(META_BOOK_ID) == book_id]
 
     return [
         build_search_result_row(text=node.text, score=node.score, metadata=node.metadata)

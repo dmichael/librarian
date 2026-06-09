@@ -205,36 +205,27 @@ def interactive_approve(title: str, suggestions: list[str]) -> list[str]:
 
 def parse_args():
     """Parse command line arguments."""
-    args = {
-        "auto": False,
-        "force": False,
-        "book_ids": [],
-    }
+    import argparse
 
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--auto":
-            args["auto"] = True
-        elif arg == "--force":
-            args["force"] = True
-        elif arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_ids"].append(int(sys.argv[i + 1]))
-            i += 1
-        elif arg in ("-h", "--help"):
-            print("Usage: librarian-classify [--auto] [--force] [--book-id ID ...]")
-            print("  --auto      Accept all LLM suggestions without prompting")
-            print("  --force     Re-classify books that already have subjects")
-            print("  --book-id   Only classify specific book IDs")
-            sys.exit(0)
-        i += 1
-
-    return args
+    parser = argparse.ArgumentParser(
+        prog="librarian-classify",
+        description="Classify books by subject using LLM analysis.",
+    )
+    parser.add_argument("--auto", action="store_true",
+                        help="Accept all LLM suggestions without prompting")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-classify books that already have subjects")
+    parser.add_argument("--book-id", action="append", dest="book_ids",
+                        type=int, default=[],
+                        help="Only classify specific book IDs (repeatable)")
+    return parser.parse_args()
 
 
 def main():
     """CLI entry point for classification."""
     args = parse_args()
+
+    from librarian.db import list_extracted_book_ids
 
     config = load_config()
     output_path = expand_path(config["output_path"])
@@ -242,14 +233,11 @@ def main():
 
     books = get_books(config)
 
-    # Find extracted books
-    extracted_dirs = [d for d in output_path.iterdir() if d.is_dir() and d.name.isdigit()]
-
-    for book_dir in sorted(extracted_dirs, key=lambda d: int(d.name)):
-        book_id = int(book_dir.name)
+    for book_id in list_extracted_book_ids(config):
+        book_dir = output_path / str(book_id)
 
         # Filter by book ID if specified
-        if args["book_ids"] and book_id not in args["book_ids"]:
+        if args.book_ids and book_id not in args.book_ids:
             continue
 
         book_meta = books.get(book_id, {})
@@ -257,7 +245,7 @@ def main():
         existing_subjects = book_meta.get("subjects") or []
 
         # Skip if already classified (unless --force)
-        if existing_subjects and not args["force"]:
+        if existing_subjects and not args.force:
             print(f"[{book_id}] {title}: Already classified ({', '.join(existing_subjects)}), skipping")
             continue
 
@@ -274,13 +262,13 @@ def main():
 
         if not suggestions:
             print(f"[{book_id}] No suggestions from LLM")
-            if not args["auto"]:
+            if not args.auto:
                 suggestions = interactive_approve(title, [])
             if not suggestions:
                 continue
 
         # Auto or interactive approval
-        if args["auto"]:
+        if args.auto:
             approved = suggestions
             print(f"[{book_id}] Auto-approved: {approved}")
         else:

@@ -131,6 +131,25 @@ def book_to_dict(book: "Book") -> dict:
     }
 
 
+def list_extracted_book_ids(config: dict | None = None) -> list[int]:
+    """IDs of books whose content has been extracted (converted_path set).
+
+    The books table is the source of truth for what exists — callers should
+    not discover books by scanning the output directory.
+    """
+    session = get_session(config)
+    try:
+        rows = (
+            session.query(Book.id)
+            .filter(Book.converted_path.isnot(None))
+            .order_by(Book.id)
+            .all()
+        )
+        return [row[0] for row in rows]
+    finally:
+        session.close()
+
+
 def get_book_metadata(
     book_ids: list[int] | None = None, config: dict | None = None
 ) -> dict[int, dict]:

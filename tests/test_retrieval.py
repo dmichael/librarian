@@ -68,6 +68,16 @@ class TestBuildFilters:
 
         assert _build_filters(None, None, None) is None
 
+    def test_book_id_filter(self):
+        from librarian.query import _build_filters
+        from librarian.metadata_types import META_BOOK_ID, META_LIBRARY
+
+        filters = _build_filters(None, "therapy", None, 42)
+        keys = self._flatten_keys(filters)
+
+        assert META_BOOK_ID in keys
+        assert META_LIBRARY in keys
+
     def test_block_type_kept_with_subjects(self):
         # Regression: block_type used to be dropped when subjects were set
         # without library.

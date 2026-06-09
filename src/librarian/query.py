@@ -7,7 +7,6 @@ Queries both:
 Results are merged and ranked by relevance score.
 """
 
-import sys
 from dataclasses import dataclass
 
 from llama_index.core import Settings, VectorStoreIndex
@@ -119,6 +118,7 @@ def retrieve(
     include_equations: bool = True,
     equation_top_k: int = 3,
     block_type: str | None = None,
+    book_id: int | None = None,
 ):
     """Run a retrieval query across text and equation collections.
 
@@ -131,6 +131,7 @@ def retrieve(
         include_equations: Whether to also search equation collection
         equation_top_k: Number of equations to retrieve
         block_type: Optional block type filter (e.g., "Code", "TableOfContents")
+        book_id: Optional book ID to restrict search to
 
     Returns:
         List of nodes (text chunks and/or equations) sorted by score
@@ -149,7 +150,7 @@ def retrieve(
     text_index = VectorStoreIndex.from_vector_store(text_store)
 
     # Build filters
-    filters = _build_filters(subjects, library, block_type)
+    filters = _build_filters(subjects, library, block_type, book_id)
     text_retriever = text_index.as_retriever(similarity_top_k=top_k, filters=filters)
     text_nodes = text_retriever.retrieve(query_text)
 
@@ -196,9 +197,19 @@ def _build_subject_filters(subjects: list[str]) -> list[MetadataFilter]:
     ]
 
 
-def _build_filters(subjects: list[str] | None, library: str | None, block_type: str | None = None):
+def _build_filters(
+    subjects: list[str] | None,
+    library: str | None,
+    block_type: str | None = None,
+    book_id: int | None = None,
+):
     """Build metadata filters for retrieval."""
     filter_list = []
+
+    if book_id is not None:
+        filter_list.append(
+            MetadataFilter(key=META_BOOK_ID, value=book_id, operator=FilterOperator.EQ)
+        )
 
     if library:
         filter_list.append(
@@ -469,62 +480,46 @@ def retrieve_equations_only(
 
 def main():
     """CLI entry point for querying."""
-    # Parse args
-    query_parts = []
-    subjects = []
-    library = None
-    block_type = None
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--subject" and i + 1 < len(sys.argv):
-            subjects.append(sys.argv[i + 1])
-            i += 1
-        elif arg == "--library" and i + 1 < len(sys.argv):
-            library = sys.argv[i + 1]
-            i += 1
-        elif arg == "--block-type" and i + 1 < len(sys.argv):
-            block_type = sys.argv[i + 1]
-            i += 1
-        elif arg in ("-h", "--help"):
-            print("Usage: librarian-query [OPTIONS] <query>")
-            print("\nOptions:")
-            print("  --library TYPE    Restrict to a specific library")
-            print("  --subject SUBJ    Filter by subject (can use multiple times)")
-            print("  --block-type TYPE Filter by block type (Code, TableOfContents, etc.)")
-            print("\nBlock types: Text, Code, SectionHeader, Equation, Table,")
-            print("             TableOfContents, ListGroup, Figure, Caption")
-            print("\nExamples:")
-            print("  librarian-query 'wallet encryption'")
-            print("  librarian-query --block-type Code 'bitcoin transaction'")
-            print("  librarian-query --block-type TableOfContents 'chapters'")
-            sys.exit(0)
-        else:
-            query_parts.append(arg)
-        i += 1
+    import argparse
 
-    if not query_parts:
-        print("Error: No query provided")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        prog="librarian-query",
+        description="Semantic search across indexed books.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Block types: Text, Code, SectionHeader, Equation, Table,
+             TableOfContents, ListGroup, Figure, Caption
 
-    query_text = " ".join(query_parts)
+Examples:
+  librarian-query 'wallet encryption'
+  librarian-query --block-type Code 'bitcoin transaction'
+  librarian-query --block-type TableOfContents 'chapters'""",
+    )
+    parser.add_argument("query", nargs="+", help="The search query")
+    parser.add_argument("--library", help="Restrict to a specific library")
+    parser.add_argument("--subject", action="append", dest="subjects", default=[],
+                        help="Filter by subject (repeatable)")
+    parser.add_argument("--block-type",
+                        help="Filter by block type (Code, TableOfContents, etc.)")
+    args = parser.parse_args()
+
+    query_text = " ".join(args.query)
     config = load_config()
 
     print(f"Query: {query_text}")
-    if library:
-        print(f"Library: {library}")
-    if subjects:
-        print(f"Subjects: {subjects}")
-    if block_type:
-        print(f"Block type: {block_type}")
+    if args.library:
+        print(f"Library: {args.library}")
+    if args.subjects:
+        print(f"Subjects: {args.subjects}")
+    if args.block_type:
+        print(f"Block type: {args.block_type}")
     print("\nLoading embedding model...")
 
     nodes = retrieve(
         query_text,
         config,
-        subjects=subjects if subjects else None,
-        library=library,
-        block_type=block_type,
+        subjects=args.subjects or None,
+        library=args.library,
+        block_type=args.block_type,
     )
 
     print("=" * 60)

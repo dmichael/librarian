@@ -1,9 +1,8 @@
 """RAG-based question answering with grounded citations."""
 
 import re
-import sys
 
-from librarian.config import expand_path, load_config
+from librarian.config import load_config
 from librarian.metadata_types import (
     META_BREADCRUMB,
     META_CHAPTER_NUM,
@@ -97,6 +96,15 @@ def clean_text_for_display(text: str) -> str:
     return text.strip()
 
 
+def _build_pdf_link(source_path: str, page) -> str | None:
+    """Build a file:// link to the source PDF, anchored to a page when known."""
+    if source_path and page:
+        return f"file://{source_path}#page={page}"
+    if source_path:
+        return f"file://{source_path}"
+    return None
+
+
 def _build_chapter_context(chapter_nodes: list) -> tuple[str, list]:
     """Build context and citations from chapter-level results.
 
@@ -135,13 +143,7 @@ def _build_chapter_context(chapter_nodes: list) -> tuple[str, list]:
             f"    Summary: {summary}{sections_str}"
         )
 
-        # Build PDF link
-        if source_path and start_page:
-            pdf_link = f"file://{source_path}#page={start_page}"
-        elif source_path:
-            pdf_link = f"file://{source_path}"
-        else:
-            pdf_link = None
+        pdf_link = _build_pdf_link(source_path, start_page)
 
         citations.append({
             "num": i,
@@ -332,14 +334,8 @@ def _build_content_context(nodes: list) -> tuple[str, list]:
             if len(text) > 200:
                 quote += "..."
 
-        # Build PDF link with page anchor
         source_path = node.metadata.get(META_SOURCE_PATH, "")
-        if source_path and page:
-            pdf_link = f"file://{source_path}#page={page}"
-        elif source_path:
-            pdf_link = f"file://{source_path}"
-        else:
-            pdf_link = None
+        pdf_link = _build_pdf_link(source_path, page)
 
         citations.append({
             "num": i,
@@ -447,86 +443,55 @@ def format_response(result: dict) -> str:
 
 def parse_args():
     """Parse command line arguments."""
-    args = {
-        "library": None,
-        "subjects": [],
-        "question_parts": [],
-        "book_id": None,
-        "query_mode": None,
-    }
+    import argparse
 
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--library" and i + 1 < len(sys.argv):
-            args["library"] = sys.argv[i + 1]
-            i += 1
-        elif arg == "--subject" and i + 1 < len(sys.argv):
-            args["subjects"].append(sys.argv[i + 1])
-            i += 1
-        elif arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_id"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--structural":
-            args["query_mode"] = "structural"
-        elif arg == "--mode" and i + 1 < len(sys.argv):
-            args["query_mode"] = sys.argv[i + 1]
-            i += 1
-        elif arg in ("-h", "--help"):
-            print("Usage: librarian-ask [OPTIONS] <question>")
-            print()
-            print("Ask a question and get a synthesized answer grounded in your library.")
-            print()
-            print("Options:")
-            print("  --library NAME    Restrict to a specific library (e.g., --library therapy)")
-            print("  --subject SUBJ    Filter by subject (e.g., --subject psychology/*)")
-            print("  --book-id ID      Restrict to a specific book by ID")
-            print("  --structural      Force structural query mode (chapter-level retrieval)")
-            print("  --mode MODE       Force query mode: structural, content, or hybrid")
-            print()
-            print("Query modes (auto-detected if not specified):")
-            print("  structural - For 'which chapter', 'where is X explained' questions")
-            print("  content    - For 'what is', 'how does', 'explain' questions (default)")
-            print("  hybrid     - For questions needing both location and content")
-            print()
-            print("Examples:")
-            print("  librarian-ask --library therapy 'How do I cope when overwhelmed?'")
-            print("  librarian-ask 'What is wise mind?'")
-            print("  librarian-ask --structural 'which chapter covers subadvisories'")
-            print("  librarian-ask --book-id 32 'where is hedge fund regulation first discussed'")
-            sys.exit(0)
-        else:
-            args["question_parts"].append(arg)
-        i += 1
+    parser = argparse.ArgumentParser(
+        prog="librarian-ask",
+        description="Ask a question and get a synthesized answer grounded in your library.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Query modes (auto-detected if not specified):
+  structural - For 'which chapter', 'where is X explained' questions
+  content    - For 'what is', 'how does', 'explain' questions (default)
+  hybrid     - For questions needing both location and content
 
-    return args
+Examples:
+  librarian-ask --library therapy 'How do I cope when overwhelmed?'
+  librarian-ask 'What is wise mind?'
+  librarian-ask --structural 'which chapter covers subadvisories'
+  librarian-ask --book-id 32 'where is hedge fund regulation first discussed'""",
+    )
+    parser.add_argument("question", nargs="+", help="The question to ask")
+    parser.add_argument("--library", help="Restrict to a specific library")
+    parser.add_argument("--subject", action="append", dest="subjects", default=[],
+                        help="Filter by subject (repeatable, e.g. psychology/*)")
+    parser.add_argument("--book-id", type=int, help="Restrict to a specific book by ID")
+    parser.add_argument("--structural", action="store_const", const="structural",
+                        dest="query_mode", help="Force structural query mode")
+    parser.add_argument("--mode", dest="query_mode",
+                        choices=["structural", "content", "hybrid"],
+                        help="Force query mode")
+    return parser.parse_args()
 
 
 def main():
     """CLI entry point for asking questions."""
     args = parse_args()
 
-    if not args["question_parts"]:
-        print("Error: No question provided")
-        print("Usage: librarian-ask [OPTIONS] <question>")
-        sys.exit(1)
-
-    question = " ".join(args["question_parts"])
+    question = " ".join(args.question)
     config = load_config()
 
     # Determine query mode (auto-detect if not specified)
-    query_mode = args["query_mode"]
     detected_mode = classify_query(question)
 
     print(f"Question: {question}")
-    if args["library"]:
-        print(f"Library: {args['library']}")
-    if args["subjects"]:
-        print(f"Subjects: {args['subjects']}")
-    if args["book_id"]:
-        print(f"Book ID: {args['book_id']}")
-    if query_mode:
-        print(f"Mode: {query_mode} (forced)")
+    if args.library:
+        print(f"Library: {args.library}")
+    if args.subjects:
+        print(f"Subjects: {args.subjects}")
+    if args.book_id:
+        print(f"Book ID: {args.book_id}")
+    if args.query_mode:
+        print(f"Mode: {args.query_mode} (forced)")
     else:
         print(f"Mode: {detected_mode} (auto-detected)")
     print("\nSearching and synthesizing...")
@@ -534,10 +499,10 @@ def main():
     result = ask(
         question,
         config,
-        library=args["library"],
-        subjects=args["subjects"] if args["subjects"] else None,
-        book_id=args["book_id"],
-        query_mode=query_mode,
+        library=args.library,
+        subjects=args.subjects or None,
+        book_id=args.book_id,
+        query_mode=args.query_mode,
     )
 
     print(format_response(result))

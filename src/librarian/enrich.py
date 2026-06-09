@@ -451,21 +451,21 @@ def enrich_book(book_id: int, config: dict = None, dry_run: bool = False,
 
 def list_books_needing_enrichment(config: dict = None) -> list[dict]:
     """List all converted books that need enrichment."""
+    from librarian.db import list_extracted_book_ids
+
     if config is None:
         config = load_config()
     output_path = expand_path(config["output_path"])
 
     books = []
-    for book_dir in output_path.iterdir():
-        if book_dir.is_dir() and book_dir.name.isdigit():
-            if marker_content_json(book_dir):
-                book_id = int(book_dir.name)
-                needs, reasons = needs_enrichment(book_id, config)
-                if needs:
-                    books.append({
-                        "book_id": book_id,
-                        "reasons": reasons,
-                    })
+    for book_id in list_extracted_book_ids(config):
+        if marker_content_json(output_path / str(book_id)):
+            needs, reasons = needs_enrichment(book_id, config)
+            if needs:
+                books.append({
+                    "book_id": book_id,
+                    "reasons": reasons,
+                })
     return books
 
 
@@ -700,45 +700,24 @@ def list_books_with_isbn(config: dict = None) -> list[int]:
 
 def parse_validate_args():
     """Parse command line arguments for librarian-validate."""
-    args = {
-        "book_id": None,
-        "all": False,
-        "fix": False,
-    }
+    import argparse
 
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_id"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--all":
-            args["all"] = True
-        elif arg == "--fix":
-            args["fix"] = True
-        elif arg in ("-h", "--help"):
-            print("""Usage: librarian-validate [OPTIONS]
-
-Cross-reference current metadata against external sources (Google Books, OpenLibrary).
-
-Options:
-  --book-id ID   Validate a specific book
-  --all          Validate all books with ISBN
-  --fix          Auto-fix high-confidence discrepancies
-  -h, --help     Show this help
-
-Examples:
+    parser = argparse.ArgumentParser(
+        prog="librarian-validate",
+        description="Cross-reference current metadata against external sources "
+                    "(Google Books, OpenLibrary).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
   librarian-validate --book-id 32
   librarian-validate --book-id 32 --fix
   librarian-validate --all
-  librarian-validate --all --fix""")
-            sys.exit(0)
-        else:
-            print(f"Unknown argument: {arg}", file=sys.stderr)
-            sys.exit(1)
-        i += 1
-
-    return args
+  librarian-validate --all --fix""",
+    )
+    parser.add_argument("--book-id", type=int, help="Validate a specific book")
+    parser.add_argument("--all", action="store_true", help="Validate all books with ISBN")
+    parser.add_argument("--fix", action="store_true",
+                        help="Auto-fix high-confidence discrepancies")
+    return parser.parse_args()
 
 
 def validate_main():
@@ -746,7 +725,7 @@ def validate_main():
     args = parse_validate_args()
     config = load_config()
 
-    if args["all"]:
+    if args.all:
         book_ids = list_books_with_isbn(config)
         if not book_ids:
             print("No books with ISBN found.")
@@ -778,7 +757,7 @@ def validate_main():
                     print(f"    Current:  {current.get('authors')}")
                     print(f"    External: {external.get('authors')} ({external.get('source')})")
 
-                if args["fix"] and result["recommendation"] == "update":
+                if args.fix and result["recommendation"] == "update":
                     success, msg = apply_validated_metadata(book_id, result, config)
                     if success:
                         print(f"    Fixed: {msg}")
@@ -790,19 +769,19 @@ def validate_main():
         print(f"\nSummary:")
         print(f"  Validated: {stats['validated']}")
         print(f"  Discrepancies: {stats['discrepancies']}")
-        if args["fix"]:
+        if args.fix:
             print(f"  Fixed: {stats['fixed']}")
         if stats["errors"]:
             print(f"  Errors: {stats['errors']}")
         return
 
-    if args["book_id"]:
-        result = validate_metadata(args["book_id"], config)
+    if args.book_id:
+        result = validate_metadata(args.book_id, config)
         print(format_validation_result(result))
 
-        if args["fix"] and result["recommendation"] == "update":
+        if args.fix and result["recommendation"] == "update":
             print("\nApplying fix...")
-            success, msg = apply_validated_metadata(args["book_id"], result, config)
+            success, msg = apply_validated_metadata(args.book_id, result, config)
             if success:
                 print(f"Success: {msg}")
             else:
@@ -815,54 +794,27 @@ def validate_main():
 
 def parse_args():
     """Parse command line arguments."""
-    args = {
-        "book_id": None,
-        "all": False,
-        "dry_run": False,
-        "force": False,
-        "list": False,
-    }
+    import argparse
 
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_id"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--all":
-            args["all"] = True
-        elif arg == "--dry-run":
-            args["dry_run"] = True
-        elif arg == "--force":
-            args["force"] = True
-        elif arg == "--list":
-            args["list"] = True
-        elif arg in ("-h", "--help"):
-            print("""Usage: librarian-enrich [OPTIONS]
-
-Enrich metadata from converted book content.
-
-Options:
-  --book-id ID   Enrich a specific book
-  --all          Enrich all books needing it
-  --list         List books needing enrichment
-  --dry-run      Show what would change without applying
-  --force        Enrich even if metadata looks complete
-  -h, --help     Show this help
-
-Examples:
+    parser = argparse.ArgumentParser(
+        prog="librarian-enrich",
+        description="Enrich metadata from converted book content.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
   librarian-enrich --list
   librarian-enrich --book-id 156
   librarian-enrich --book-id 156 --dry-run
   librarian-enrich --all --dry-run
-  librarian-enrich --all""")
-            sys.exit(0)
-        else:
-            print(f"Unknown argument: {arg}", file=sys.stderr)
-            sys.exit(1)
-        i += 1
-
-    return args
+  librarian-enrich --all""",
+    )
+    parser.add_argument("--book-id", type=int, help="Enrich a specific book")
+    parser.add_argument("--all", action="store_true", help="Enrich all books needing it")
+    parser.add_argument("--list", action="store_true", help="List books needing enrichment")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show what would change without applying")
+    parser.add_argument("--force", action="store_true",
+                        help="Enrich even if metadata looks complete")
+    return parser.parse_args()
 
 
 def main():
@@ -871,7 +823,7 @@ def main():
     config = load_config()
 
     # Handle --list
-    if args["list"]:
+    if args.list:
         books = list_books_needing_enrichment(config)
         if not books:
             print("No books need enrichment.")
@@ -882,7 +834,7 @@ def main():
         return
 
     # Handle --all
-    if args["all"]:
+    if args.all:
         books = list_books_needing_enrichment(config)
         if not books:
             print("No books need enrichment.")
@@ -891,19 +843,19 @@ def main():
         print(f"Processing {len(books)} books...\n")
         for b in books:
             result = enrich_book(b["book_id"], config,
-                               dry_run=args["dry_run"],
-                               force=args["force"])
+                               dry_run=args.dry_run,
+                               force=args.force)
             print(f"[{b['book_id']}] {result['status']}: {result.get('message', '')}")
-            if result.get("changes") and args["dry_run"]:
+            if result.get("changes") and args.dry_run:
                 for change in result["changes"]:
                     print(f"    {change}")
         return
 
     # Handle --book-id
-    if args["book_id"]:
-        result = enrich_book(args["book_id"], config,
-                           dry_run=args["dry_run"],
-                           force=args["force"])
+    if args.book_id:
+        result = enrich_book(args.book_id, config,
+                           dry_run=args.dry_run,
+                           force=args.force)
         print(format_result(result))
         return
 

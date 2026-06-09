@@ -546,23 +546,37 @@ def get_book_structure(book_id: int, config: dict = None) -> dict | None:
     }
 
 
+def _render_chunks(chunks: list[dict]) -> list[str]:
+    """Render block chunks as display lines (headers and equations marked)."""
+    lines = []
+    for chunk in chunks:
+        block_type = chunk.get("block_type", "")
+        text = chunk.get("text", "")
+        if block_type == "SectionHeader":
+            lines.append(f"\n## {text}\n")
+        elif block_type == "Equation":
+            lines.append(f"\n[Equation]\n{text}\n")
+        else:
+            lines.append(text)
+    return lines
+
+
+def _render_pages(result: dict) -> list[str]:
+    """Render per-page chunk groups as display lines."""
+    lines = []
+    for page_data in result.get("pages", []):
+        lines.append(f"\n--- Page {page_data['page']} ---\n")
+        lines.extend(_render_chunks(page_data.get("chunks", [])))
+    return lines
+
+
 def format_page_output(result: dict) -> str:
     """Format a single page result for CLI output."""
     lines = []
     lines.append(f"Book: {result['title']} (ID: {result['book_id']})")
     lines.append(f"Page: {result['page']}")
     lines.append("=" * 60)
-
-    for chunk in result.get("chunks", []):
-        block_type = chunk.get("block_type", "")
-        text = chunk.get("text", "")
-        if block_type in ("SectionHeader",):
-            lines.append(f"\n## {text}\n")
-        elif block_type == "Equation":
-            lines.append(f"\n[Equation]\n{text}\n")
-        else:
-            lines.append(text)
-
+    lines.extend(_render_chunks(result.get("chunks", [])))
     return "\n".join(lines)
 
 
@@ -572,19 +586,7 @@ def format_pages_output(result: dict) -> str:
     lines.append(f"Book: {result['title']} (ID: {result['book_id']})")
     lines.append(f"Pages: {result['start_page']}-{result['end_page']}")
     lines.append("=" * 60)
-
-    for page_data in result.get("pages", []):
-        lines.append(f"\n--- Page {page_data['page']} ---\n")
-        for chunk in page_data.get("chunks", []):
-            block_type = chunk.get("block_type", "")
-            text = chunk.get("text", "")
-            if block_type in ("SectionHeader",):
-                lines.append(f"\n## {text}\n")
-            elif block_type == "Equation":
-                lines.append(f"\n[Equation]\n{text}\n")
-            else:
-                lines.append(text)
-
+    lines.extend(_render_pages(result))
     return "\n".join(lines)
 
 
@@ -636,19 +638,7 @@ def format_chapter_output(result: dict) -> str:
         lines.append(f"Chapter: {result['chapter_title']}")
     lines.append(f"Pages: {result['start_page']}-{result['end_page']}")
     lines.append("=" * 60)
-
-    for page_data in result.get("pages", []):
-        lines.append(f"\n--- Page {page_data['page']} ---\n")
-        for chunk in page_data.get("chunks", []):
-            block_type = chunk.get("block_type", "")
-            text = chunk.get("text", "")
-            if block_type in ("SectionHeader",):
-                lines.append(f"\n## {text}\n")
-            elif block_type == "Equation":
-                lines.append(f"\n[Equation]\n{text}\n")
-            else:
-                lines.append(text)
-
+    lines.extend(_render_pages(result))
     return "\n".join(lines)
 
 
@@ -717,68 +707,13 @@ def format_references_output(result: dict) -> str:
 
 def parse_args():
     """Parse command line arguments."""
-    args = {
-        "book_id": None,
-        "page": None,
-        "pages": None,  # "start-end" format
-        "context": None,
-        "list": False,
-        "structure": False,
-        "search": None,
-        "chapter": None,
-        "first": None,
-        "references": False,
-    }
+    import argparse
 
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--book-id" and i + 1 < len(sys.argv):
-            args["book_id"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--page" and i + 1 < len(sys.argv):
-            args["page"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--pages" and i + 1 < len(sys.argv):
-            args["pages"] = sys.argv[i + 1]
-            i += 1
-        elif arg == "--context" and i + 1 < len(sys.argv):
-            args["context"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--search" and i + 1 < len(sys.argv):
-            args["search"] = sys.argv[i + 1]
-            i += 1
-        elif arg == "--chapter" and i + 1 < len(sys.argv):
-            args["chapter"] = sys.argv[i + 1]
-            i += 1
-        elif arg == "--first" and i + 1 < len(sys.argv):
-            args["first"] = int(sys.argv[i + 1])
-            i += 1
-        elif arg == "--list":
-            args["list"] = True
-        elif arg == "--structure":
-            args["structure"] = True
-        elif arg == "--references":
-            args["references"] = True
-        elif arg in ("-h", "--help"):
-            print("""Usage: librarian-read [OPTIONS]
-
-Read content from indexed books for agent navigation.
-
-Options:
-  --book-id ID       Book ID (required except for --list)
-  --page PAGE        Read a specific page
-  --pages START-END  Read a page range (e.g., 105-110)
-  --context N        Read N pages before and after --page (default: 0)
-  --search TERM      Search for text within the book
-  --chapter NAME|N   Read a chapter by name (fuzzy) or number
-  --first N          Read the first N pages of content
-  --references       Analyze citations and bibliography in the book
-  --list             List all indexed books
-  --structure        Show book structure (table of contents)
-  -h, --help         Show this help
-
-Examples:
+    parser = argparse.ArgumentParser(
+        prog="librarian-read",
+        description="Read content from indexed books for agent navigation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
   librarian-read --list
   librarian-read --book-id 156 --page 107
   librarian-read --book-id 156 --page 107 --context 2
@@ -788,14 +723,22 @@ Examples:
   librarian-read --book-id 156 --chapter "Preface"
   librarian-read --book-id 156 --chapter 3
   librarian-read --book-id 156 --first 5
-  librarian-read --book-id 156 --references""")
-            sys.exit(0)
-        else:
-            print(f"Unknown argument: {arg}", file=sys.stderr)
-            sys.exit(1)
-        i += 1
-
-    return args
+  librarian-read --book-id 156 --references""",
+    )
+    parser.add_argument("--book-id", type=int, help="Book ID (required except for --list)")
+    parser.add_argument("--page", type=int, help="Read a specific page")
+    parser.add_argument("--pages", help="Read a page range (e.g., 105-110)")
+    parser.add_argument("--context", type=int,
+                        help="Read N pages before and after --page (default: 0)")
+    parser.add_argument("--search", help="Search for text within the book")
+    parser.add_argument("--chapter", help="Read a chapter by name (fuzzy) or number")
+    parser.add_argument("--first", type=int, help="Read the first N pages of content")
+    parser.add_argument("--references", action="store_true",
+                        help="Analyze citations and bibliography in the book")
+    parser.add_argument("--list", action="store_true", help="List all indexed books")
+    parser.add_argument("--structure", action="store_true",
+                        help="Show book structure (table of contents)")
+    return parser.parse_args()
 
 
 def main():
@@ -804,7 +747,7 @@ def main():
     config = load_config()
 
     # Handle --list
-    if args["list"]:
+    if args.list:
         books = list_books(config)
         if not books:
             print("No indexed books found.")
@@ -813,13 +756,13 @@ def main():
         return
 
     # All other operations require book_id
-    book_id = args["book_id"]
+    book_id = args.book_id
     if not book_id:
         print("Error: --book-id required (or use --list)", file=sys.stderr)
         sys.exit(1)
 
     # Handle --structure
-    if args["structure"]:
+    if args.structure:
         result = get_book_structure(book_id, config)
         if not result:
             print(f"Error: Book {book_id} not found or not indexed", file=sys.stderr)
@@ -828,7 +771,7 @@ def main():
         return
 
     # Handle --references
-    if args["references"]:
+    if args.references:
         result = find_references(book_id, config)
         if not result:
             print(f"Error: Book {book_id} not found or not indexed", file=sys.stderr)
@@ -837,28 +780,28 @@ def main():
         return
 
     # Handle --search
-    if args["search"]:
-        result = search_book(book_id, args["search"], config)
+    if args.search:
+        result = search_book(book_id, args.search, config)
         if not result:
-            print(f"No matches found for \"{args['search']}\" in book {book_id}",
+            print(f"No matches found for \"{args.search}\" in book {book_id}",
                   file=sys.stderr)
             sys.exit(1)
         print(format_search_output(result))
         return
 
     # Handle --chapter
-    if args["chapter"]:
-        result = read_chapter(book_id, args["chapter"], config)
+    if args.chapter:
+        result = read_chapter(book_id, args.chapter, config)
         if not result:
-            print(f"Error: Chapter \"{args['chapter']}\" not found in book {book_id}",
+            print(f"Error: Chapter \"{args.chapter}\" not found in book {book_id}",
                   file=sys.stderr)
             sys.exit(1)
         print(format_chapter_output(result))
         return
 
     # Handle --first
-    if args["first"]:
-        result = read_first_pages(book_id, args["first"], config)
+    if args.first:
+        result = read_first_pages(book_id, args.first, config)
         if not result:
             print(f"Error: Could not read first pages of book {book_id}", file=sys.stderr)
             sys.exit(1)
@@ -866,9 +809,9 @@ def main():
         return
 
     # Handle page range (--pages)
-    if args["pages"]:
+    if args.pages:
         try:
-            start, end = map(int, args["pages"].split("-"))
+            start, end = map(int, args.pages.split("-"))
         except ValueError:
             print("Error: --pages format should be START-END (e.g., 105-110)", file=sys.stderr)
             sys.exit(1)
@@ -881,17 +824,16 @@ def main():
         return
 
     # Handle single page with optional context
-    page = args["page"]
+    page = args.page
     if not page:
         print("Error: --page, --pages, --search, --chapter, --first, --references, or --structure required",
               file=sys.stderr)
         sys.exit(1)
 
-    context = args["context"]
-    if context:
-        result = get_context(book_id, page, context, config)
+    if args.context:
+        result = get_context(book_id, page, args.context, config)
         if not result:
-            print(f"Error: No content found for page {page} (+/- {context}) in book {book_id}",
+            print(f"Error: No content found for page {page} (+/- {args.context}) in book {book_id}",
                   file=sys.stderr)
             sys.exit(1)
         print(format_pages_output(result))
