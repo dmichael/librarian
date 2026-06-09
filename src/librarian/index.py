@@ -289,11 +289,7 @@ def generate_chapter_summary(chapter_text: str, chapter_title: str, config: dict
 
     Uses the same LLM provider configured for classification.
     """
-    import httpx
-
-    llm_config = config.get("classification", {})
-    provider = llm_config.get("provider", "ollama")
-    model = llm_config.get("model", "llama3.2")
+    from librarian.llm import complete
 
     # Truncate chapter text if too long (keep first ~4000 chars for summary)
     max_chars = 4000
@@ -309,33 +305,7 @@ Content:
 
 Summary:"""
 
-    if provider == "anthropic":
-        import os
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            response = client.messages.create(
-                model=model,
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return response.content[0].text.strip()
-        except Exception as e:
-            print(f"Anthropic summary error: {e}", file=sys.stderr)
-            return ""
-    else:
-        # Ollama
-        try:
-            response = httpx.post(
-                "http://localhost:11434/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False},
-                timeout=60.0,
-            )
-            response.raise_for_status()
-            return response.json().get("response", "").strip()
-        except Exception as e:
-            print(f"Ollama summary error: {e}", file=sys.stderr)
-            return ""
+    return complete(prompt, config, max_tokens=256, timeout=60.0).strip()
 
 
 def extract_chapter_text(content: str, chapter_num: int, structure: DocumentStructure) -> str:

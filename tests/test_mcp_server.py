@@ -2,11 +2,12 @@
 
 import inspect
 
-from librarian.mcp_server import _book_vector_metadata_updates, search
+from librarian.catalog import build_vector_metadata_updates
+from librarian.mcp_server import search
 
 
 def test_book_vector_metadata_updates_includes_display_and_filter_fields():
-    updates = _book_vector_metadata_updates(
+    updates = build_vector_metadata_updates(
         title="Domain-Specific Small Language Models",
         authors=["Guglielmo Iozzia"],
         subjects=["cs/small-language-models", "cs/fine-tuning"],
@@ -22,7 +23,7 @@ def test_book_vector_metadata_updates_includes_display_and_filter_fields():
 
 
 def test_book_vector_metadata_updates_omits_unchanged_fields():
-    assert _book_vector_metadata_updates(authors=["Guglielmo Iozzia"]) == {
+    assert build_vector_metadata_updates(authors=["Guglielmo Iozzia"]) == {
         "authors": "Guglielmo Iozzia",
     }
 

@@ -30,47 +30,6 @@ def sample_book_content(book_dir: Path, sample_size: int = 5000) -> str:
     return f"{beginning}\n\n[...]\n\n{middle}\n\n[...]\n\n{end}"
 
 
-def call_ollama(prompt: str, model: str) -> str:
-    """Call Ollama for classification."""
-    try:
-        import httpx
-        response = httpx.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-            },
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        return response.json().get("response", "")
-    except Exception as e:
-        print(f"Ollama error: {e}", file=sys.stderr)
-        print("Make sure Ollama is running: ollama serve", file=sys.stderr)
-        return ""
-
-
-def call_anthropic(prompt: str, model: str) -> str:
-    """Call Anthropic Claude for classification."""
-    import os
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
-    except ImportError:
-        print("anthropic package not installed. Run: pip install anthropic", file=sys.stderr)
-        return ""
-    except Exception as e:
-        print(f"Anthropic error: {e}", file=sys.stderr)
-        return ""
-
-
 def classify_book(
     book_id: int,
     title: str,
@@ -96,14 +55,9 @@ Example response: ["psychology/therapy", "self-help/skills-training"]
 
 Your response (JSON array only):"""
 
-    llm_config = config.get("classification", {})
-    provider = llm_config.get("provider", "ollama")
-    model = llm_config.get("model", "llama3.2")
+    from librarian.llm import complete
 
-    if provider == "anthropic":
-        response = call_anthropic(prompt, model)
-    else:
-        response = call_ollama(prompt, model)
+    response = complete(prompt, config, max_tokens=1024)
 
     if not response:
         return []
@@ -120,6 +74,78 @@ Your response (JSON array only):"""
         print(f"Failed to parse LLM response: {response[:200]}", file=sys.stderr)
 
     return []
+
+
+# ---------------------------------------------------------------------------
+# Keyword heuristics — fast, LLM-free subject/library suggestion
+# ---------------------------------------------------------------------------
+
+TAG_RULES = [
+    # therapy
+    (["dialectical behavior", "dbt", "linehan", "distress tolerance", "emotion regulation"],
+     "therapy/dbt"),
+    (["cognitive behavioral", "cognitive behaviour", "cbt", "automatic thoughts", "thought record"],
+     "therapy/cbt"),
+    (["acceptance and commitment", "act ", "psychological flexibility", "defusion", "russ harris"],
+     "therapy/act"),
+    (["internal family systems", "ifs", "parts work", "self-energy", "richard schwartz"],
+     "therapy/ifs"),
+    (["existential", "logotherapy", "meaning-centered", "irvin yalom"],
+     "therapy/existential"),
+    (["psychotherapy", "therapeutic", "clinician", "therapist", "mental health"],
+     "therapy"),
+    # biology / science
+    (["biology", "evolution", "ecology", "species", "organism"],
+     "biology"),
+    (["neuroscience", "brain", "neural", "cortex", "synapse"],
+     "biology/neuroscience"),
+    (["bioacoustics", "animal communication", "vocalization", "call structure"],
+     "biology/bioacoustics"),
+    # cs / tech
+    (["algorithm", "data structure", "computer science", "programming"],
+     "cs"),
+    (["networking", "tcp", "protocol", "routing", "packet"],
+     "cs/networking"),
+    (["machine learning", "deep learning", "neural network", "training data"],
+     "cs/ml"),
+    (["cryptography", "bitcoin", "blockchain", "distributed ledger"],
+     "cs/crypto"),
+]
+
+LIBRARY_RULES = [
+    (["therapy", "therapeutic", "psychotherapy", "clinician", "mental health",
+      "dbt", "cbt", "act ", "ifs", "counseling"], "therapy-core"),
+    (["biology", "ecology", "evolution", "species", "organism", "bioacoustics"],
+     "biology"),
+    (["computer", "programming", "algorithm", "software", "networking"],
+     "cs"),
+]
+
+
+def suggest_tags_for_text(sample: str) -> tuple[list[str], str | None]:
+    """Suggest (subjects, library) for a text sample via keyword heuristics."""
+    sample = sample.lower()
+
+    matched_subjects = [
+        subject for keywords, subject in TAG_RULES
+        if any(kw in sample for kw in keywords)
+    ]
+
+    # Deduplicate: if we matched therapy/dbt, drop bare "therapy"
+    specific = [s for s in matched_subjects if "/" in s]
+    if specific:
+        matched_subjects = [
+            s for s in matched_subjects
+            if "/" in s or not any(sp.startswith(s + "/") for sp in specific)
+        ]
+
+    suggested_library = next(
+        (library for keywords, library in LIBRARY_RULES
+         if any(kw in sample for kw in keywords)),
+        None,
+    )
+
+    return matched_subjects, suggested_library
 
 
 def get_books(config: dict) -> dict[int, dict]:

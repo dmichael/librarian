@@ -3,8 +3,6 @@
 import re
 import sys
 
-import httpx
-
 from librarian.config import expand_path, load_config
 from librarian.metadata_types import (
     META_BREADCRUMB,
@@ -97,42 +95,6 @@ def clean_text_for_display(text: str) -> str:
     # Clean up excessive whitespace
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
-
-
-def call_ollama(prompt: str, model: str) -> str:
-    """Call Ollama for synthesis."""
-    try:
-        response = httpx.post(
-            "http://localhost:11434/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        return response.json().get("response", "")
-    except Exception as e:
-        print(f"Ollama error: {e}", file=sys.stderr)
-        print("Make sure Ollama is running: ollama serve", file=sys.stderr)
-        return ""
-
-
-def call_anthropic(prompt: str, model: str) -> str:
-    """Call Anthropic Claude for synthesis."""
-    import os
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
-    except ImportError:
-        print("anthropic package not installed. Run: pip install anthropic", file=sys.stderr)
-        return ""
-    except Exception as e:
-        print(f"Anthropic error: {e}", file=sys.stderr)
-        return ""
 
 
 def _build_chapter_context(chapter_nodes: list) -> tuple[str, list]:
@@ -314,14 +276,9 @@ USER QUESTION: {question}
 ANSWER (use [N] citations, be concise and grounded):"""
 
     # 2. Call LLM for synthesis
-    llm_config = config.get("classification", {})
-    provider = llm_config.get("provider", "ollama")
-    model = llm_config.get("model", "llama3.2")
+    from librarian.llm import complete
 
-    if provider == "anthropic":
-        answer = call_anthropic(prompt, model)
-    else:
-        answer = call_ollama(prompt, model)
+    answer = complete(prompt, config, max_tokens=2048)
 
     return {"answer": answer, "citations": citations, "query_type": query_type}
 

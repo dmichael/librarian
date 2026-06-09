@@ -6,6 +6,7 @@ replacing Calibre's SQLite for ID assignment and pipeline state tracking.
 Uses the same PostgreSQL instance as pgvector (configured via LIBRARIAN_DB_URL).
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -93,6 +94,20 @@ def get_session(config: dict | None = None) -> Session:
     return _session_factory()
 
 
+@contextmanager
+def session_scope(config: dict | None = None):
+    """Session context manager: commit on success, rollback on error, always close."""
+    session = get_session(config)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def book_to_dict(book: "Book") -> dict:
     """Flatten a Book row into a plain metadata dict.
 
@@ -108,6 +123,7 @@ def book_to_dict(book: "Book") -> dict:
         "publisher": meta.get("publisher"),
         "year": meta.get("year"),
         "subjects": list(book.subjects or []),
+        "library": book.library,
         "status": book.status,
         "format": book.format,
         "source_path": book.source_path,
