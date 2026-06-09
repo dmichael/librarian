@@ -28,8 +28,20 @@ APP_NAME = "librarian-extract"
 # real headroom. A100-80GB syntax per Modal 1.x GPU guide.
 GPU = "A100-80GB"
 
-# Large scans run ~30 min even on a fast GPU; allow margin.
-EXTRACT_TIMEOUT = 3600
+# A very large scan can run over an hour even on an A100; allow generous margin.
+EXTRACT_TIMEOUT = 7200
+
+# Surya's batch sizes, set generously for the 80 GB A100 (its VRAM dwarfs the
+# shared Spark pool, so we can push these well past the Spark's values). Passed
+# as function env — NOT an image layer — so changing them doesn't rebuild the
+# image. These are a throughput lever to be measured, not assumed.
+SURYA_BATCH: dict[str, str | None] = {
+    "RECOGNITION_BATCH_SIZE": "256",
+    "DETECTOR_BATCH_SIZE": "36",
+    "LAYOUT_BATCH_SIZE": "36",
+    "TABLE_REC_BATCH_SIZE": "36",
+    "OCR_ERROR_BATCH_SIZE": "128",
+}
 
 app = modal.App(APP_NAME)
 
@@ -48,7 +60,10 @@ image = (
 )
 
 
-@app.function(gpu=GPU, image=image, timeout=EXTRACT_TIMEOUT, retries=1)
+# retries=0: a failed/stopped extraction must NOT silently re-run — these are
+# expensive GPU jobs, and a retry doubles the cost (and respawns on cancel).
+# Fail loudly instead; the caller surfaces it.
+@app.function(gpu=GPU, image=image, timeout=EXTRACT_TIMEOUT, retries=0, env=SURYA_BATCH)
 def extract_marker_remote(pdf_bytes: bytes, filename: str) -> dict:
     """Run marker on one PDF inside Modal and return its chunks + metadata.
 
@@ -58,6 +73,13 @@ def extract_marker_remote(pdf_bytes: bytes, filename: str) -> dict:
     import json
     import subprocess
     import tempfile
+
+    import torch
+    print(
+        f"[modal] torch={torch.__version__} cuda_available={torch.cuda.is_available()} "
+        f"device={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}",
+        flush=True,
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
