@@ -128,32 +128,25 @@ def extract_worker(book_id: int, source_path: str, output_dir: str, config: dict
             config,
         )
         t0 = time.monotonic()
-        errors, _meta = extract(source, book_output, config)
+        result = extract(source, book_output, config)
         extraction_duration = time.monotonic() - t0
 
-        if ext == ".pdf":
-            # Marker is the primary content extractor; without its output there
-            # are no blocks/markdown to index. Treat that as a failure rather
-            # than reporting "extracted" and then failing confusingly at index
-            # time with "No extracted markdown found".
-            from librarian.files import marker_content_json
-            if marker_content_json(book_output) is None:
-                detail = "; ".join(errors) or "marker produced no content"
-                update_book_status(
-                    book_id, "failed", f"extraction incomplete: {detail}",
-                    config, extraction_duration_s=extraction_duration,
-                )
-                return
-        elif errors:
+        # Without primary content (blocks/markdown) there is nothing to
+        # index — fail now rather than confusingly at index time.
+        if not result.has_content:
+            detail = "; ".join(result.errors) or "no indexable content produced"
             update_book_status(
-                book_id, "failed", "; ".join(errors),
+                book_id, "failed", f"extraction incomplete: {detail}",
                 config, extraction_duration_s=extraction_duration,
             )
             return
 
+        message = f"Extraction complete in {extraction_duration:.0f}s"
+        if result.errors:
+            message += f" (partial: {'; '.join(result.errors)})"
+
         update_book_status(
-            book_id, "extracted",
-            f"Extraction complete in {extraction_duration:.0f}s",
+            book_id, "extracted", message,
             config,
             converted_path=str(book_output),
             extraction_duration_s=extraction_duration,

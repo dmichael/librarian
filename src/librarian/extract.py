@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from pydantic import BaseModel, Field
+
 from librarian.config import load_config
 from librarian.document_metadata import (
     DocumentMetadata,
@@ -20,24 +22,50 @@ from librarian.document_metadata import (
 from librarian.extract_routing import route_pdf
 
 
+class ExtractionResult(BaseModel):
+    """Outcome of extracting one source file.
+
+    has_content is the indexability signal: True when the primary content
+    artifacts (blocks/markdown) were produced. errors may be non-empty even
+    when has_content is True (e.g. marker succeeded but GROBID failed) —
+    that is a partial extraction, still indexable.
+    """
+
+    errors: list[str] = Field(default_factory=list)
+    metadata: DocumentMetadata
+    has_content: bool
+
+    @property
+    def success(self) -> bool:
+        return self.has_content and not self.errors
+
 
 def extract(
     source: Path, output_dir: Path, config: dict | None = None,
-) -> tuple[list[str], DocumentMetadata]:
+) -> ExtractionResult:
     """Extract a single file to output_dir.
 
-    Returns (errors, metadata). Errors list is empty on full success.
-    Writes metadata.json to output_dir.
+    Writes metadata.json to output_dir and returns an ExtractionResult.
     """
     suffix = source.suffix.lower()
     source_hash = compute_file_hash(source)
 
     if suffix == ".pdf":
         errors, meta = extract_pdf(source, output_dir, config)
+        # Marker is the primary content extractor for PDFs; its block JSON
+        # is what makes the book indexable.
+        from librarian.files import marker_content_json
+
+        has_content = marker_content_json(output_dir) is not None
     elif suffix == ".epub":
         errors, meta = _extract_epub_with_metadata(source, output_dir)
+        has_content = not errors
     else:
-        return [f"unsupported format: {suffix}"], DocumentMetadata()
+        return ExtractionResult(
+            errors=[f"unsupported format: {suffix}"],
+            metadata=DocumentMetadata(),
+            has_content=False,
+        )
 
     meta.source_hash = source_hash
     meta.source_filename = source.name
@@ -46,7 +74,7 @@ def extract(
     meta.extracted_at = now_iso()
 
     save_document_metadata(output_dir, meta)
-    return errors, meta
+    return ExtractionResult(errors=errors, metadata=meta, has_content=has_content)
 
 
 def _extract_epub_with_metadata(

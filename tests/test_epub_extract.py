@@ -50,9 +50,12 @@ def test_extract_epub_end_to_end(sample_epub: Path, tmp_path: Path):
     output_dir = tmp_path / "out"
     output_dir.mkdir()
 
-    errors, meta = extract(sample_epub, output_dir)
+    result = extract(sample_epub, output_dir)
+    meta = result.metadata
 
-    assert errors == []
+    assert result.errors == []
+    assert result.has_content
+    assert result.success
 
     # Indexable artifacts: blocks + markdown
     raw_dir = marker_dir(output_dir)
@@ -78,6 +81,8 @@ def test_extract_unsupported_format(tmp_path: Path):
     bad = tmp_path / "notes.txt"
     bad.write_text("plain text")
 
-    errors, meta = extract(bad, tmp_path / "out2")
+    result = extract(bad, tmp_path / "out2")
 
-    assert errors and "unsupported format" in errors[0]
+    assert result.errors and "unsupported format" in result.errors[0]
+    assert not result.has_content
+    assert not result.success
