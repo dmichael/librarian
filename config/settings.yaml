@@ -60,8 +60,15 @@ chunking:
 classification:
   # vLLM on the DGX Spark (OpenAI-compatible API; same box as Marker/GROBID).
   provider: vllm
-  model: Qwen/Qwen3.6-35B-A3B-FP8
   api_base: http://spark-f80b.local:8000/v1
+  # 'auto' = use whatever model vLLM is currently serving (discovered per call
+  # from /v1/models), so swapping the model on the Spark needs no change here.
+  # Pin an explicit id (e.g. Qwen/Qwen3.6-35B-A3B-FP8) for reproducibility.
+  model: auto
+  # extra_body is the per-model-FAMILY knob. Update when switching families:
+  #   Qwen3      -> chat_template_kwargs.enable_thinking: false  (as below)
+  #   gpt-oss    -> reasoning params instead
+  #   plain chat -> remove extra_body entirely
   extra_body:
     chat_template_kwargs:
       enable_thinking: false   # keep the answer in message.content, not reasoning

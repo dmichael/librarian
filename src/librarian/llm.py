@@ -8,13 +8,19 @@ Provider and model come from the `classification` config block:
 
     classification:
       provider: ollama | anthropic | openai   # "vllm" is an alias for "openai"
-      model: llama3.2 | claude-... | Qwen/...
+      model: auto | llama3.2 | claude-... | Qwen/...
       ollama_url: http://localhost:11434      # ollama only
       api_base: http://host:8000/v1           # openai-compatible only
       api_key: ...                            # openai-compatible; defaults to env/EMPTY
       extra_body:                             # openai-compatible passthrough, e.g.
         chat_template_kwargs:                 # disable Qwen3 thinking so the
           enable_thinking: false              # answer lands in message.content
+
+For an openai-compatible server that serves a single model (e.g. vLLM),
+`model: auto` discovers the served model from /v1/models on each call — so
+swapping the model on the server needs no change here. `extra_body` is the
+one genuinely per-model knob (how the model should behave); update it when
+switching model *families* (Qwen thinking, gpt-oss reasoning, plain chat).
 """
 
 import logging
@@ -83,6 +89,26 @@ def _complete_ollama(prompt: str, model: str, llm_config: dict, timeout: float) 
     return response.json().get("response", "")
 
 
+def _discover_openai_model(base_url: str, api_key: str, timeout: float) -> str:
+    """Return the model an OpenAI-compatible server is serving (first in /models).
+
+    For vLLM (one model per server) this is unambiguous, so `model: auto`
+    follows whatever is currently loaded on the Spark.
+    """
+    import httpx
+
+    response = httpx.get(
+        f"{base_url}/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=min(timeout, 15.0),
+    )
+    response.raise_for_status()
+    served = response.json().get("data", [])
+    if not served:
+        raise ValueError(f"no models served at {base_url}")
+    return served[0]["id"]
+
+
 def _complete_openai(
     prompt: str, model: str, llm_config: dict, max_tokens: int, timeout: float
 ) -> str:
@@ -91,6 +117,9 @@ def _complete_openai(
 
     base_url = llm_config.get("api_base", DEFAULT_OPENAI_BASE).rstrip("/")
     api_key = llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY", "EMPTY")
+
+    if not model or model.lower() == "auto":
+        model = _discover_openai_model(base_url, api_key, timeout)
 
     payload = {
         "model": model,

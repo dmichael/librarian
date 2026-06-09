@@ -115,6 +115,46 @@ def test_openai_provider_posts_chat_completion(monkeypatch):
     assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+class _ModelsResponse:
+    def __init__(self, model_id):
+        self._model_id = model_id
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"object": "list", "data": [{"id": self._model_id, "object": "model"}]}
+
+
+def test_openai_model_auto_discovers_served_model(monkeypatch):
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["models_url"] = url
+        return _ModelsResponse("Qwen/Qwen3.6-35B-A3B-FP8")
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["sent_model"] = json["model"]
+        return _ChatResponse('["a/b"]')
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    config = {
+        "classification": {
+            "provider": "vllm",
+            "model": "auto",
+            "api_base": "http://spark-f80b.local:8000/v1",
+        }
+    }
+
+    assert llm.complete("p", config) == '["a/b"]'
+    # discovered from /v1/models, then sent verbatim in the chat request
+    assert captured["models_url"] == "http://spark-f80b.local:8000/v1/models"
+    assert captured["sent_model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+
+
 def test_openai_empty_content_retries_then_gives_up(monkeypatch):
     # A reasoning model that emits no content (thinking ate the budget) should
     # be retried, not silently returned as an answer.
