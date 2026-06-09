@@ -37,5 +37,8 @@ tools/plugins/
 # Generated extraction QA artifacts; tracked audits should be Markdown files.
 qa/audits/book-*/
 
+# Fixture source PDFs: large and often copyrighted; integration tests run
+# against local copies, not versioned ones.
+tests/fixtures/*.pdf
 # Extracted fixture outputs (regenerated from tests/fixtures/*.pdf)
 tests/fixtures/extracted/
