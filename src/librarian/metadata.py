@@ -140,17 +140,17 @@ def normalize_author_name(name: str) -> str:
     return normalized
 
 
-def compare_authors(calibre_authors: list[str], external_authors: list[str]) -> bool:
+def compare_authors(existing_authors: list[str], external_authors: list[str]) -> bool:
     """Compare author lists, handling name variations.
 
     Returns True if they match (same authors), False if different.
     """
-    if not calibre_authors and not external_authors:
+    if not existing_authors and not external_authors:
         return True
-    if not calibre_authors or not external_authors:
+    if not existing_authors or not external_authors:
         return False
 
-    calibre_normalized = {normalize_author_name(a) for a in calibre_authors}
+    existing_normalized = {normalize_author_name(a) for a in existing_authors}
     external_normalized = {normalize_author_name(a) for a in external_authors}
 
-    return calibre_normalized == external_normalized
+    return existing_normalized == external_normalized

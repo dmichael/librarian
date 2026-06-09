@@ -35,84 +35,21 @@ class BenchmarkQuery:
     description: str = ""        # Human description of what we're testing
 
 
-# Benchmark suite - add more queries here to expand coverage
-BENCHMARK_QUERIES = [
-    # Finance domain
-    BenchmarkQuery(
-        query="What is an expense ratio?",
-        expected_sources=["Fund Industry"],
-        expected_terms=["expense", "ratio", "fee"],
-        description="Basic finance concept retrieval",
-    ),
-    BenchmarkQuery(
-        query="How are hedge fund fees calculated?",
-        expected_sources=["Fund Industry"],
-        expected_terms=["fee", "performance", "management"],
-        description="Specific finance topic",
-    ),
-    BenchmarkQuery(
-        query="mutual fund performance evaluation",
-        expected_sources=["Fund Industry"],
-        expected_terms=["performance", "fund", "return"],
-        collection="chapters",
-        description="Chapter-level retrieval for finance",
-    ),
+_QUERIES_FILE = Path(__file__).parent.parent.parent / "config" / "benchmark_queries.json"
 
-    # Psychology/DBT domain
-    BenchmarkQuery(
-        query="How do I practice mindfulness?",
-        expected_sources=["DBT", "Skills Training"],
-        expected_terms=["attention", "present", "awareness", "practice"],
-        description="Mindfulness techniques",
-    ),
-    BenchmarkQuery(
-        query="emotion regulation techniques",
-        expected_sources=["DBT", "Skills Training"],
-        expected_terms=["emotion", "regulat"],
-        description="DBT core skill",
-    ),
-    BenchmarkQuery(
-        query="distress tolerance skills",
-        expected_sources=["DBT", "Skills Training"],
-        expected_terms=["distress", "tolerance", "crisis"],
-        description="DBT distress tolerance module",
-    ),
 
-    # Science/birdsong domain
-    BenchmarkQuery(
-        query="How does the syrinx produce sound?",
-        expected_sources=["Gardner", "Birdsong"],
-        expected_terms=["syrinx", "vocal", "oscillat"],
-        description="Birdsong mechanics",
-    ),
-    BenchmarkQuery(
-        query="vocal fold oscillation model",
-        expected_sources=["Gardner", "Birdsong"],
-        expected_terms=["oscillat", "fold", "model"],
-        description="Physical model of birdsong",
-    ),
-    BenchmarkQuery(
-        query="damped harmonic oscillator equation",
-        expected_sources=["Gardner"],
-        expected_terms=["equation", "P_b"],  # Equation number marker and pressure term
-        collection="equations",
-        description="Equation retrieval for physics",
-    ),
+def load_benchmark_queries(path: Path | None = None) -> list[BenchmarkQuery]:
+    """Load the benchmark query suite from its data file.
 
-    # Cross-domain (should retrieve from appropriate source)
-    BenchmarkQuery(
-        query="investment portfolio management",
-        expected_sources=["Fund Industry"],
-        expected_terms=["portfolio", "invest", "fund"],
-        description="Investment topic routing",
-    ),
-    BenchmarkQuery(
-        query="interpersonal effectiveness",
-        expected_sources=["DBT", "Skills Training"],
-        expected_terms=["interpersonal", "relationship"],
-        description="DBT interpersonal module",
-    ),
-]
+    The queries are corpus-specific (they reference particular books), so
+    they live in config/benchmark_queries.json rather than in code — edit
+    that file to match the corpus being benchmarked.
+    """
+    with open(path or _QUERIES_FILE) as f:
+        return [BenchmarkQuery(**entry) for entry in json.load(f)]
+
+
+BENCHMARK_QUERIES = load_benchmark_queries()
 
 
 # =============================================================================

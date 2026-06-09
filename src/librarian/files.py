@@ -36,21 +36,6 @@ def marker_html(book_dir: Path) -> Path | None:
     return path if path.exists() else None
 
 
-def load_book_content(book_dir: Path) -> dict | None:
-    """Load book content blocks."""
-    content_file = marker_content_json(book_dir)
-    if not content_file:
-        return None
-
-    with open(content_file) as f:
-        data = json.load(f)
-
-    if "blocks" not in data:
-        return None
-
-    return data
-
-
 def chunks_to_markdown(chunks_path: Path) -> str:
     """Convert marker chunks JSON (path) to markdown.
 

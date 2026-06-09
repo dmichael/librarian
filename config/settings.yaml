@@ -8,7 +8,6 @@
 # Data Paths
 # =============================================================================
 
-library_path: ~/data/librarian/calibre           # Calibre library (books + metadata)
 intake_path: ~/data/librarian/intake/ebooks      # Drop zone for PDFs/EPUBs
 kindle_intake_path: ~/data/librarian/intake/kindle
 captures_path: ~/data/librarian/intake/captures

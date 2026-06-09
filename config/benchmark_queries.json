@@ -1,0 +1,70 @@
+[
+  {
+    "query": "What is an expense ratio?",
+    "expected_sources": ["Fund Industry"],
+    "expected_terms": ["expense", "ratio", "fee"],
+    "description": "Basic finance concept retrieval"
+  },
+  {
+    "query": "How are hedge fund fees calculated?",
+    "expected_sources": ["Fund Industry"],
+    "expected_terms": ["fee", "performance", "management"],
+    "description": "Specific finance topic"
+  },
+  {
+    "query": "mutual fund performance evaluation",
+    "expected_sources": ["Fund Industry"],
+    "expected_terms": ["performance", "fund", "return"],
+    "collection": "chapters",
+    "description": "Chapter-level retrieval for finance"
+  },
+  {
+    "query": "How do I practice mindfulness?",
+    "expected_sources": ["DBT", "Skills Training"],
+    "expected_terms": ["attention", "present", "awareness", "practice"],
+    "description": "Mindfulness techniques"
+  },
+  {
+    "query": "emotion regulation techniques",
+    "expected_sources": ["DBT", "Skills Training"],
+    "expected_terms": ["emotion", "regulat"],
+    "description": "DBT core skill"
+  },
+  {
+    "query": "distress tolerance skills",
+    "expected_sources": ["DBT", "Skills Training"],
+    "expected_terms": ["distress", "tolerance", "crisis"],
+    "description": "DBT distress tolerance module"
+  },
+  {
+    "query": "How does the syrinx produce sound?",
+    "expected_sources": ["Gardner", "Birdsong"],
+    "expected_terms": ["syrinx", "vocal", "oscillat"],
+    "description": "Birdsong mechanics"
+  },
+  {
+    "query": "vocal fold oscillation model",
+    "expected_sources": ["Gardner", "Birdsong"],
+    "expected_terms": ["oscillat", "fold", "model"],
+    "description": "Physical model of birdsong"
+  },
+  {
+    "query": "damped harmonic oscillator equation",
+    "expected_sources": ["Gardner"],
+    "expected_terms": ["equation", "P_b"],
+    "collection": "equations",
+    "description": "Equation retrieval for physics"
+  },
+  {
+    "query": "investment portfolio management",
+    "expected_sources": ["Fund Industry"],
+    "expected_terms": ["portfolio", "invest", "fund"],
+    "description": "Investment topic routing"
+  },
+  {
+    "query": "interpersonal effectiveness",
+    "expected_sources": ["DBT", "Skills Training"],
+    "expected_terms": ["interpersonal", "relationship"],
+    "description": "DBT interpersonal module"
+  }
+]

@@ -153,8 +153,10 @@ def main():
         session.close()
         return
 
-    # 3. Gather data from all sources
-    calibre_path = expand_path(config["library_path"])
+    # 3. Gather data from all sources. The Calibre mirror path is inlined
+    # here (no longer in settings) — this one-time backfill is the only
+    # remaining consumer.
+    calibre_path = expand_path(config.get("library_path", "~/data/librarian/calibre"))
     converted_path = expand_path(config["output_path"])
 
     print(f"Scanning Calibre dir: {calibre_path}")
