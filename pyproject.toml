@@ -5,6 +5,10 @@ description = "Personal knowledge base for agent intelligence"
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0",
+    # Domain models (DocumentMetadata, structure, extractor outputs, routing).
+    # Imported directly across the package — must be a first-class dependency,
+    # not relied on transitively.
+    "pydantic>=2",
     # PDF extraction is delegated to remote marker services:
     #   --spark    => HTTP to the LAN Spark marker-service
     #   --cloud    => Modal A100s via the [cloud] optional extra

@@ -22,6 +22,7 @@ from librarian.document_metadata import (
     now_iso,
     save_document_metadata,
 )
+from librarian.extract_routing import route_pdf
 from librarian.files import marker_dir
 
 
@@ -97,6 +98,16 @@ def extract_pdf(
         )
 
     if spark_url:
+        decision = route_pdf(source)
+        sig = decision.signals
+        print(
+            f"  ROUTING: {decision.backend} — {decision.reason} "
+            f"(img_mpix={sig.img_mpix}, page_mpix={sig.page_megapix}, pages={sig.pages})",
+            flush=True,
+        )
+        # Modal backend not wired yet: log the decision and run on Spark for now.
+        # When the Modal extractor lands, dispatch here on decision.backend
+        # instead of always calling marker.extract(..., backend="spark").
         try:
             marker_result = marker.extract(
                 source, output_dir, backend="spark", spark_url=spark_url,
