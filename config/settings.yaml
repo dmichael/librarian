@@ -56,7 +56,13 @@ chunking:
 # Classification LLM
 # =============================================================================
 
+# provider: ollama | anthropic | openai (alias: vllm). See librarian/llm.py.
 classification:
-  provider: ollama        # or "anthropic" for Claude
-  model: llama3.2         # Ollama model, or claude-sonnet-4-20250514 for Anthropic
-  sample_size: 5000       # chars to sample from book for classification
+  # vLLM on the DGX Spark (OpenAI-compatible API; same box as Marker/GROBID).
+  provider: vllm
+  model: Qwen/Qwen3.6-35B-A3B-FP8
+  api_base: http://spark-f80b.local:8000/v1
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false   # keep the answer in message.content, not reasoning
+  sample_size: 5000            # chars to sample from book for classification

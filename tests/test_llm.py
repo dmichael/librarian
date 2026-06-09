@@ -71,3 +71,63 @@ def test_returns_empty_after_exhausted_retries(monkeypatch):
     monkeypatch.setattr(llm, "_RETRY_DELAY_S", 0)
 
     assert llm.complete("p", {}) == ""
+
+
+class _ChatResponse:
+    def __init__(self, content):
+        self._content = content
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def test_openai_provider_posts_chat_completion(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = json
+        return _ChatResponse('["Cryptocurrency", "Security"]')
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    config = {
+        "classification": {
+            "provider": "vllm",
+            "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+            "api_base": "http://spark-f80b.local:8000/v1",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
+    }
+
+    result = llm.complete("classify this", config, max_tokens=200)
+
+    assert result == '["Cryptocurrency", "Security"]'
+    assert captured["url"] == "http://spark-f80b.local:8000/v1/chat/completions"
+    assert captured["payload"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "classify this"}]
+    # extra_body merged into the request, thinking disabled
+    assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_openai_empty_content_retries_then_gives_up(monkeypatch):
+    # A reasoning model that emits no content (thinking ate the budget) should
+    # be retried, not silently returned as an answer.
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(1)
+        return _ChatResponse(None)
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(llm, "_RETRY_DELAY_S", 0)
+
+    config = {"classification": {"provider": "openai"}}
+    assert llm.complete("p", config) == ""
+    assert len(calls) == 1 + llm._RETRIES
