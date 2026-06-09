@@ -48,6 +48,70 @@ class TestLatexAugmentation:
         assert result == text
 
 
+class TestBuildFilters:
+    """Unit tests for metadata filter construction."""
+
+    def _flatten_keys(self, filters):
+        """Collect all filter keys, descending into nested MetadataFilters."""
+        from llama_index.core.vector_stores import MetadataFilters
+
+        keys = []
+        for f in filters.filters:
+            if isinstance(f, MetadataFilters):
+                keys.extend(self._flatten_keys(f))
+            else:
+                keys.append(f.key)
+        return keys
+
+    def test_no_filters_returns_none(self):
+        from librarian.query import _build_filters
+
+        assert _build_filters(None, None, None) is None
+
+    def test_block_type_kept_with_subjects(self):
+        # Regression: block_type used to be dropped when subjects were set
+        # without library.
+        from librarian.query import _build_filters
+        from librarian.metadata_types import META_BLOCK_TYPE, META_SUBJECTS
+
+        filters = _build_filters(["psychology/*"], None, "Code")
+        keys = self._flatten_keys(filters)
+
+        assert META_BLOCK_TYPE in keys
+        assert META_SUBJECTS in keys
+
+    def test_library_subjects_and_block_type_all_kept(self):
+        from librarian.query import _build_filters
+        from librarian.metadata_types import (
+            META_BLOCK_TYPE,
+            META_LIBRARY,
+            META_SUBJECTS,
+        )
+
+        filters = _build_filters(["finance/*"], "therapy", "Table")
+        keys = self._flatten_keys(filters)
+
+        assert META_LIBRARY in keys
+        assert META_BLOCK_TYPE in keys
+        assert META_SUBJECTS in keys
+        assert filters.condition == "and"
+
+    def test_subjects_only_is_or_group(self):
+        from llama_index.core.vector_stores import MetadataFilters
+
+        from librarian.query import _build_filters
+
+        filters = _build_filters(["a/*", "b/*"], None, None)
+
+        # One nested OR group containing both subject filters
+        assert filters.condition == "and"
+        assert len(filters.filters) == 1
+        inner = filters.filters[0]
+        assert isinstance(inner, MetadataFilters)
+        assert inner.condition == "or"
+        assert len(inner.filters) == 2
+
+
 class TestRetrievalQuality:
     """Integration tests for retrieval quality.
 

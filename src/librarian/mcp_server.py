@@ -87,8 +87,6 @@ def _update_book_status(book_id: int, status: str, message: str = None, **kwargs
 # ---------------------------------------------------------------------------
 
 _config = None
-_embed_model = None
-_embed_lock = threading.Lock()
 
 
 def _get_config():
@@ -99,38 +97,14 @@ def _get_config():
 
 
 def _get_embed_model():
-    """Load embedding model once (takes a few seconds on first call).
+    """Load the shared embedding model (cached process-wide in librarian.embeddings)."""
+    from llama_index.core import Settings
 
-    Thread-safe — concurrent callers block on the lock while the model loads.
-    """
-    global _embed_model
-    if _embed_model is not None:
-        return _embed_model
+    from librarian.embeddings import get_embed_model
 
-    with _embed_lock:
-        # Double-check after acquiring lock
-        if _embed_model is not None:
-            return _embed_model
-
-        from llama_index.core import Settings
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
-        config = _get_config()
-        emb = config.get("embedding", {})
-        model_name = emb.get("model", "BAAI/bge-base-en-v1.5")
-        device = emb.get("device", "cpu")
-
-        if "bge" in model_name.lower():
-            _embed_model = HuggingFaceEmbedding(
-                model_name=model_name,
-                device=device,
-                query_instruction="Represent this sentence for searching relevant passages: ",
-            )
-        else:
-            _embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-        Settings.embed_model = _embed_model
-    return _embed_model
+    model = get_embed_model(_get_config())
+    Settings.embed_model = model
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -375,10 +349,9 @@ def index_book(book_id: int) -> dict:
 def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
     """Background worker for book extraction.
 
-    Routing:
-      - PDF  → librarian.extract.extract_pdf (runs marker + grobid extractors,
-               then the references domain builder)
-      - EPUB → local ebooklib-based extractor (librarian.epub_extract)
+    Delegates to librarian.extract.extract, which routes by format
+    (PDF → marker + grobid extractors, EPUB → ebooklib) and persists
+    metadata.json alongside the artifacts.
     """
     import time
 
@@ -389,17 +362,24 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
     try:
         file_size_mb = source.stat().st_size / (1024 * 1024)
 
-        if ext == ".pdf":
-            from librarian.extract import extract_pdf
-
+        if ext not in (".pdf", ".epub"):
             _update_book_status(
-                book_id, "extracting",
-                f"Running PDF extractors on {source.name} ({file_size_mb:.1f} MB)...",
+                book_id, "failed",
+                f"Unsupported extension {ext} (expected .pdf or .epub)",
             )
-            t0 = time.monotonic()
-            errors, _meta = extract_pdf(source, book_output)
-            extraction_duration = time.monotonic() - t0
+            return
 
+        from librarian.extract import extract
+
+        _update_book_status(
+            book_id, "extracting",
+            f"Extracting {source.name} ({file_size_mb:.1f} MB)...",
+        )
+        t0 = time.monotonic()
+        errors, _meta = extract(source, book_output)
+        extraction_duration = time.monotonic() - t0
+
+        if ext == ".pdf":
             # Marker is the primary content extractor; without its output there
             # are no blocks/markdown to index. Treat that as a failure rather
             # than reporting "extracted" and then failing confusingly at index
@@ -412,29 +392,10 @@ def _extract_book_worker(book_id: int, source_path: str, output_dir: str):
                     extraction_duration_s=extraction_duration,
                 )
                 return
-
-        elif ext == ".epub":
-            from librarian.epub_extract import extract_epub
-
+        elif errors:
             _update_book_status(
-                book_id, "extracting",
-                f"Extracting {source.name} ({file_size_mb:.1f} MB) locally via ebooklib...",
-            )
-            t0 = time.monotonic()
-            result = extract_epub(source, book_id, book_output)
-            extraction_duration = time.monotonic() - t0
-
-            if not result["success"]:
-                _update_book_status(
-                    book_id, "failed", result["error"] or "EPUB extraction failed",
-                    extraction_duration_s=extraction_duration,
-                )
-                return
-
-        else:
-            _update_book_status(
-                book_id, "failed",
-                f"Unsupported extension {ext} (expected .pdf or .epub)",
+                book_id, "failed", "; ".join(errors),
+                extraction_duration_s=extraction_duration,
             )
             return
 

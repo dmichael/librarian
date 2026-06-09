@@ -3,7 +3,7 @@
 Pure business logic — no CLI, no Calibre. Functions here take
 content and metadata, create nodes, and write to vector stores.
 
-CLI lives in librarian.cli.index.
+The MCP server's index worker is the caller (librarian.mcp_server).
 """
 
 import json
@@ -44,9 +44,9 @@ from llama_index.core import Document, StorageContext, VectorStoreIndex
 
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
+from librarian.embeddings import get_embed_model
 from librarian.metadata_types import (
     META_BLOCK_INDEX,
     META_BREADCRUMB,
@@ -282,30 +282,6 @@ def create_nodes_from_blocks(
             nodes.append(TextNode(text=piece, metadata=node_meta))
 
     return nodes
-
-
-def setup_embedding_model(config: dict) -> HuggingFaceEmbedding:
-    """Initialize the embedding model."""
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-    batch_size = embedding_config.get("batch_size", 48)
-
-    print(f"Loading embedding model: {model_name} on {device} (batch={batch_size})")
-
-    # For BGE models, we need to add the query instruction
-    if "bge" in model_name.lower():
-        return HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            embed_batch_size=batch_size,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    return HuggingFaceEmbedding(
-        model_name=model_name, device=device, embed_batch_size=batch_size
-    )
-
-
 
 
 def generate_chapter_summary(chapter_text: str, chapter_title: str, config: dict) -> str:

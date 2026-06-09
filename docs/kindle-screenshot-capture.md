@@ -60,18 +60,11 @@ marker_single ~/data/librarian/source/kindle-captures/{book-slug}/combined.pdf \
 
 ### Phase 4: Ingest to Pipeline
 
-Run the combined PDF through the normal extract → index pipeline (this supersedes
-the manual `marker_single` step above — `librarian extract` produces the proper
-artifact layout that the indexer expects):
-
-```bash
-# Extract the captured PDF into the converted/ artifacts dir
-librarian extract ~/data/librarian/source/kindle-captures/{book-slug}/combined.pdf \
-  -o ~/data/librarian/converted
-
-# Index all unindexed extraction dirs (or pass the specific {hash} dir)
-librarian index
-```
+Run the combined PDF through the normal MCP pipeline (this supersedes the
+manual `marker_single` step above — the extract worker produces the proper
+artifact layout that the indexer expects): register the combined PDF with the
+`ingest_book` (or `upload_book`) tool, then run `extract_book(book_id)` and
+`index_book(book_id)`.
 
 ## Script Reference
 

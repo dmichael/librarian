@@ -1,19 +1,14 @@
 """Extraction functions for PDF and EPUB formats.
 
-Pure business logic — no CLI, no Calibre. Each function takes a source
-file and an output directory, writes artifacts, and returns.
-
-CLI lives in librarian.cli.extract.
+Pure business logic — each function takes a source file and an output
+directory, writes artifacts, and returns. The MCP extract worker is the
+caller (librarian.mcp_server).
 """
 from __future__ import annotations
 
 import os
 import sys
-import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
-
-import markdownify
 
 from librarian.document_metadata import (
     DocumentMetadata,
@@ -23,7 +18,6 @@ from librarian.document_metadata import (
     save_document_metadata,
 )
 from librarian.extract_routing import route_pdf
-from librarian.files import marker_dir
 
 
 
@@ -56,20 +50,27 @@ def extract(source: Path, output_dir: Path) -> tuple[list[str], DocumentMetadata
 def _extract_epub_with_metadata(
     source: Path, output_dir: Path,
 ) -> tuple[list[str], DocumentMetadata]:
-    """Run extract_epub and wrap its result as (errors, DocumentMetadata)."""
+    """Run the ebooklib EPUB extractor, wrapping its result as (errors, DocumentMetadata)."""
+    from librarian.epub_extract import extract_epub
+
     try:
-        epub_meta = extract_epub(source, output_dir)
-        meta = DocumentMetadata(
-            format="epub",
-            title=epub_meta.get("title"),
-            authors=epub_meta.get("authors", []),
-            publisher=epub_meta.get("publisher"),
-            year=epub_meta.get("year"),
-            extractors_run=["epub"],
-        )
-        return [], meta
+        result = extract_epub(source, output_dir)
     except Exception as e:
         return [f"epub: {e}"], DocumentMetadata(format="epub")
+
+    if not result["success"]:
+        return [f"epub: {result['error']}"], DocumentMetadata(format="epub")
+
+    opf = result.get("metadata", {})
+    meta = DocumentMetadata(
+        format="epub",
+        title=opf.get("title"),
+        authors=opf.get("authors", []),
+        publisher=opf.get("publisher"),
+        year=opf.get("year"),
+        extractors_run=["epub"],
+    )
+    return [], meta
 
 
 def extract_pdf(
@@ -153,82 +154,5 @@ def extract_pdf(
     return errors, meta
 
 
-def extract_epub(source: Path, output_dir: Path) -> dict:
-    """Extract EPUB to markdown by parsing XHTML content.
-
-    Returns a dict of metadata extracted from the OPF (title, authors, etc.).
-    """
-    raw_dir = marker_dir(output_dir)
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    output_file = raw_dir / "document.md"
-    chapters_dir = output_dir / "chapters"
-    chapters_dir.mkdir(exist_ok=True)
-
-    with zipfile.ZipFile(source, 'r') as epub:
-        container = epub.read('META-INF/container.xml')
-        container_tree = ET.fromstring(container)
-        ns = {'c': 'urn:oasis:names:tc:opendocument:xmlns:container'}
-        opf_path = container_tree.find('.//c:rootfile', ns).get('full-path')
-        opf_dir = str(Path(opf_path).parent)
-        if opf_dir == '.':
-            opf_dir = ''
-
-        opf_content = epub.read(opf_path)
-        opf_tree = ET.fromstring(opf_content)
-
-        DC = "http://purl.org/dc/elements/1.1/"
-        epub_meta = {
-            "title": opf_tree.findtext(f".//{{{DC}}}title"),
-            "authors": [
-                el.text for el in opf_tree.findall(f".//{{{DC}}}creator")
-                if el.text
-            ],
-            "publisher": opf_tree.findtext(f".//{{{DC}}}publisher"),
-        }
-        raw_date = opf_tree.findtext(f".//{{{DC}}}date")
-        if raw_date:
-            import re
-            year_match = re.search(r"\d{4}", raw_date)
-            if year_match:
-                epub_meta["year"] = int(year_match.group(0))
-
-        manifest: dict[str, str] = {}
-        for item in opf_tree.findall('.//{http://www.idpf.org/2007/opf}item'):
-            item_id = item.get('id')
-            href = item.get('href')
-            media_type = item.get('media-type', '')
-            if item_id and href and ('html' in media_type or 'xhtml' in media_type):
-                manifest[item_id] = href
-
-        spine_items: list[str] = []
-        for itemref in opf_tree.findall('.//{http://www.idpf.org/2007/opf}itemref'):
-            idref = itemref.get('idref')
-            if idref and idref in manifest:
-                spine_items.append(manifest[idref])
-
-        full_content: list[str] = []
-        for i, href in enumerate(spine_items):
-            content_path = f"{opf_dir}/{href}" if opf_dir else href
-
-            try:
-                html_content = epub.read(content_path).decode('utf-8')
-                md_content = markdownify.markdownify(html_content, heading_style="ATX")
-                lines = []
-                for line in md_content.split('\n'):
-                    if line.strip().startswith('xml version='):
-                        continue
-                    if line.strip() or lines:
-                        lines.append(line)
-                md_content = '\n'.join(lines).strip()
-
-                full_content.append(md_content)
-                chapter_file = chapters_dir / f"{i:03d}.md"
-                chapter_file.write_text(md_content)
-            except KeyError:
-                continue
-
-        output_file.write_text('\n\n---\n\n'.join(full_content))
-
-    return epub_meta
 
 

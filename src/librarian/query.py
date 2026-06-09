@@ -12,9 +12,9 @@ from dataclasses import dataclass
 
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from librarian.config import load_config
+from librarian.embeddings import get_embed_model
 from librarian.metadata_types import (
     META_BLOCK_TYPE,
     META_BOOK_ID,
@@ -75,22 +75,7 @@ def setup_retriever(
         store: Optional pre-initialized vector store (avoids creating new one)
         block_type: Optional block type to filter by (e.g., "Code", "TableOfContents")
     """
-    # Embedding config
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    # For BGE models, add query instruction
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     # Get vector store
     if store is None:
@@ -157,21 +142,7 @@ def retrieve(
     store = get_vector_store(config)
     collections = get_collection_names(config)
 
-    # Setup embedding model (shared)
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     # Get text chunks
     text_store = store.get_llama_store(collections["full"])
@@ -241,11 +212,8 @@ def _build_filters(subjects: list[str] | None, library: str | None, block_type: 
 
     if subjects:
         subject_filters = _build_subject_filters(subjects)
-        if library and subject_filters:
+        if subject_filters:
             filter_list.append(MetadataFilters(filters=subject_filters, condition="or"))
-            return MetadataFilters(filters=filter_list, condition="and")
-        elif subject_filters:
-            return MetadataFilters(filters=subject_filters, condition="or")
 
     if filter_list:
         return MetadataFilters(filters=filter_list, condition="and")
@@ -282,21 +250,7 @@ def retrieve_chapters(
     store = get_vector_store(config)
     collections = get_collection_names(config)
 
-    # Setup embedding model
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     ch_retriever = setup_chapter_retriever(store, collections["chapters"], top_k=top_k)
 
@@ -345,21 +299,7 @@ def retrieve_chapters_ordered(
     store = get_vector_store(config)
     collections = get_collection_names(config)
 
-    # Setup embedding model
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     ch_retriever = setup_chapter_retriever(store, collections["chapters"], top_k=top_k)
 
@@ -445,21 +385,7 @@ def retrieve_hierarchical(
     store = get_vector_store(config)
     collections = get_collection_names(config)
 
-    # Setup embedding model
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     text_store = store.get_llama_store(collections["full"])
     text_index = VectorStoreIndex.from_vector_store(text_store)
@@ -531,21 +457,7 @@ def retrieve_equations_only(
     store = get_vector_store(config)
     collections = get_collection_names(config)
 
-    # Setup embedding model
-    embedding_config = config.get("embedding", {})
-    model_name = embedding_config.get("model", "BAAI/bge-base-en-v1.5")
-    device = embedding_config.get("device", "cpu")
-
-    if "bge" in model_name.lower():
-        embed_model = HuggingFaceEmbedding(
-            model_name=model_name,
-            device=device,
-            query_instruction="Represent this sentence for searching relevant passages: ",
-        )
-    else:
-        embed_model = HuggingFaceEmbedding(model_name=model_name, device=device)
-
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model(config)
 
     eq_retriever = setup_equation_retriever(store, collections["equations"], top_k=top_k)
 

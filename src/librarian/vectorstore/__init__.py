@@ -1,10 +1,7 @@
 """Vector store abstraction for Librarian.
 
-Provides a unified interface for different vector store backends:
-- qdrant-file: Local Qdrant storage (default, requires locking)
-- qdrant-server: Qdrant server for production (no locking needed)
-- lancedb: Embedded LanceDB for development (no locking needed)
-- chroma: Embedded Chroma for development (flexible metadata, no locking)
+Provides a unified interface for the supported backends:
+- qdrant-file: Local Qdrant storage for development (requires locking)
 - pgvector: PostgreSQL with pgvector extension (production, no locking needed)
 
 Usage:
@@ -51,7 +48,7 @@ def get_vector_store(
 
     Raises:
         ValueError: If backend type is unknown
-        ImportError: If required dependencies are not installed (e.g., lancedb)
+        ImportError: If required dependencies are not installed (e.g., pgvector)
     """
     global _vector_store_instance
     if _vector_store_instance is not None:
@@ -72,29 +69,6 @@ def get_vector_store(
         path = expand_path(vs_config.get("qdrant_path", "~/data/librarian/vectorstore/qdrant"))
         store = QdrantFileStore(path=path, default_collection=default_collection)
 
-    elif backend == "qdrant-server":
-        from librarian.vectorstore.qdrant_server import QdrantServerStore
-
-        store = QdrantServerStore(
-            host=vs_config.get("host", "localhost"),
-            port=vs_config.get("port", 6333),
-            api_key=vs_config.get("api_key"),
-            https=vs_config.get("https", False),
-            default_collection=default_collection,
-        )
-
-    elif backend == "lancedb":
-        from librarian.vectorstore.lancedb_store import LanceDBStore
-
-        uri = expand_path(vs_config.get("lancedb_path", "~/data/librarian/vectorstore/lancedb"))
-        store = LanceDBStore(uri=uri, default_collection=default_collection)
-
-    elif backend == "chroma":
-        from librarian.vectorstore.chroma_store import ChromaStore
-
-        path = expand_path(vs_config.get("chroma_path", "~/data/librarian/vectorstore/chroma"))
-        store = ChromaStore(path=path, default_collection=default_collection)
-
     elif backend == "pgvector":
         from librarian.vectorstore.pgvector_store import PgvectorStore
 
@@ -109,7 +83,7 @@ def get_vector_store(
     else:
         raise ValueError(
             f"Unknown vector store backend: {backend}. "
-            "Valid options: qdrant-file, qdrant-server, lancedb, chroma, pgvector"
+            "Valid options: qdrant-file, pgvector"
         )
 
     _vector_store_instance = store

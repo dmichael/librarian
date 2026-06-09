@@ -1,15 +1,14 @@
 # Librarian Pipeline Makefile
 #
 # Usage:
-#   make              - Run full pipeline (intake → extract → index)
+#   make              - Show help
 #   make status       - Show pipeline state
-#   make index        - Index extracted books to vector store
 #   make modal-deploy - Deploy the Modal GPU extractor (offload for oversized PDFs)
 
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: help index run build deploy ship preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality clean-extracted clean-extracted-confirm modal-deploy
+.PHONY: help run build deploy ship preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality clean-extracted clean-extracted-confirm modal-deploy
 
 .DEFAULT_GOAL := help
 
@@ -26,20 +25,13 @@ help:
 	@echo "Modal (cloud GPU offload for oversized PDFs):"
 	@echo "  make modal-deploy  deploy the Modal extractor (reads token from .env.production)"
 	@echo ""
-	@echo "Index / DB / tests:"
-	@echo "  make index                index extracted dirs under output_path"
-	@echo "                            (extract first: librarian extract <files> -o <output_path>)"
+	@echo "DB / tests:"
 	@echo "  make db-migrate-snapshot  safe DB snapshot (no migration)"
 	@echo "  make db-migrate-safe      snapshot + apply Alembic migration safely"
 	@echo "  make test-baseline        local characterization tests"
 	@echo "  make test-retrieval-quality  retrieval quality smoke tests"
 	@echo ""
 	@echo "Docker API override: DOCKER_API_VERSION=1.45 (set per host if needed)"
-
-# Index extracted content into the vector store (scans output_path).
-# To extract first: librarian extract <files> -o <output_path>
-index:
-	@$(VENV)/librarian-index
 
 # Clean extracted content (use with caution)
 clean-extracted:

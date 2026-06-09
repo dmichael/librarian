@@ -7,9 +7,9 @@ This module provides:
 - CLI for comparing backends
 
 Usage:
-    librarian-benchmark                    # Run with current backend
-    librarian-benchmark --backend chroma   # Run with specific backend
-    librarian-benchmark --compare          # Compare all available backends
+    librarian-benchmark                        # Run with current backend
+    librarian-benchmark --backend qdrant-file  # Run with specific backend
+    librarian-benchmark --compare              # Compare all available backends
 """
 
 import json
@@ -412,7 +412,7 @@ def compare_backends(
         Dict mapping backend name to BenchmarkReport
     """
     if backends is None:
-        backends = ["qdrant-file", "lancedb", "chroma"]
+        backends = ["qdrant-file", "pgvector"]
 
     reports = {}
     for backend in backends:
@@ -458,16 +458,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  librarian-benchmark                    Run with current backend
-  librarian-benchmark --backend chroma   Run with specific backend
-  librarian-benchmark --compare          Compare all available backends
-  librarian-benchmark --json             Output results as JSON
-  librarian-benchmark -k 10              Use top-10 instead of top-5
+  librarian-benchmark                        Run with current backend
+  librarian-benchmark --backend qdrant-file  Run with specific backend
+  librarian-benchmark --compare              Compare all available backends
+  librarian-benchmark --json                 Output results as JSON
+  librarian-benchmark -k 10                  Use top-10 instead of top-5
         """,
     )
     parser.add_argument(
         "--backend",
-        choices=["qdrant-file", "qdrant-server", "lancedb", "chroma"],
+        choices=["qdrant-file", "pgvector"],
         help="Override backend from config",
     )
     parser.add_argument(

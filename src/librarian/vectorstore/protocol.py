@@ -134,3 +134,28 @@ class LibrarianVectorStore(Protocol):
             List of (document_text, metadata_dict) tuples
         """
         ...
+
+    def text_search(
+        self,
+        collection_name: str,
+        query: str,
+        book_id: int | None = None,
+        library: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple[str, dict]]:
+        """Literal substring search (case-insensitive) over document text.
+
+        For part numbers, error codes, and other exact values that semantic
+        search can't find.
+
+        Args:
+            collection_name: Name of the collection
+            query: Substring to search for (case-insensitive)
+            book_id: Optional book ID to restrict the search to
+            library: Optional library to restrict the search to
+            limit: Maximum number of results
+
+        Returns:
+            List of (document_text, metadata_dict) tuples
+        """
+        ...

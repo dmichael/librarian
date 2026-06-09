@@ -11,9 +11,18 @@ import pytest
 
 # Skip if dependencies not available
 pytest.importorskip("llama_index")
-pytest.importorskip("chromadb")
 
 from librarian.benchmark import BenchmarkQuery, score_result, run_benchmarks
+
+
+def _bge_model_cached() -> bool:
+    """True if the embedding model is already in the local HF cache.
+
+    The fixture benchmarks embed real text; without a cached model they
+    would download ~400MB mid-test, so they skip instead.
+    """
+    cache = Path.home() / ".cache" / "huggingface" / "hub"
+    return any(cache.glob("models--BAAI--bge-base-en-v1.5*"))
 
 
 # Fixture-specific benchmark queries with known expected results
@@ -100,6 +109,7 @@ FIXTURE_BENCHMARKS = [
 ]
 
 
+@pytest.mark.skipif(not _bge_model_cached(), reason="BGE embedding model not in local HF cache")
 class TestFixtureBenchmarks:
     """Benchmark tests using synthetic fixture data."""
 
@@ -108,21 +118,17 @@ class TestFixtureBenchmarks:
         """Index fixture documents into a temporary vectorstore."""
         from llama_index.core import Document, Settings, VectorStoreIndex
         from llama_index.core.node_parser import SentenceSplitter
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-        from librarian.vectorstore.chroma_store import ChromaStore
+        from librarian.embeddings import get_embed_model
+        from librarian.vectorstore.qdrant_file import QdrantFileStore
 
-        # Set up embedding model
-        embed_model = HuggingFaceEmbedding(
-            model_name="BAAI/bge-base-en-v1.5",
-            device="cpu",
-            query_instruction="Represent this sentence for searching relevant passages: ",
+        Settings.embed_model = get_embed_model(
+            {"embedding": {"model": "BAAI/bge-base-en-v1.5", "device": "cpu"}}
         )
-        Settings.embed_model = embed_model
 
         # Create temp directory for vectorstore
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = ChromaStore(path=tmpdir, default_collection="test_fixtures")
+            store = QdrantFileStore(path=Path(tmpdir), default_collection="test_fixtures")
 
             # Load fixture documents
             fixtures_dir = Path(__file__).parent / "fixtures" / "books"

@@ -86,16 +86,17 @@ config/
 
 ## CLI commands
 
-- `librarian` — dispatcher (`extract` / `index` / `query` / `serve`)
-- `librarian-serve` — MCP server
-- `librarian-extract` / `librarian-index` — file-mode extract / index
-- `librarian-query` / `librarian-ask` — retrieval / RAG
-- `librarian-classify` / `librarian-enrich` — service-mode (books table) utilities
+Extraction and indexing run through the MCP server tools (`extract_book`,
+`index_book`) — there is no file-mode CLI. Remaining shell utilities:
 
-Run CLI via venv, for example:
+- `librarian-serve` — MCP server
+- `librarian-query` / `librarian-ask` — retrieval / RAG
+- `librarian-classify` / `librarian-enrich` — books-table utilities
+
+Run via venv, for example:
 
 ```bash
-.venv/bin/librarian-index
+.venv/bin/librarian-query "wallet encryption"
 ```
 
 If scripts are missing after environment changes:

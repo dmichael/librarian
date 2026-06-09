@@ -6,7 +6,7 @@ so the indexing pipeline works unchanged.
 
 Usage:
     from librarian.epub_extract import extract_epub
-    result = extract_epub(Path("book.epub"), book_id=33, output_dir=Path("converted/33"))
+    result = extract_epub(Path("book.epub"), output_dir=Path("converted/33"))
 """
 
 import json
@@ -77,24 +77,43 @@ def _extract_blocks_from_html(html: str, chapter_idx: int) -> list[dict]:
     return blocks
 
 
-def extract_epub(epub_path: Path, book_id: int, output_dir: Path) -> dict:
+def _opf_metadata(book) -> dict:
+    """Extract title/authors/publisher/year from the EPUB's OPF metadata."""
+
+    def first(field: str):
+        values = book.get_metadata("DC", field)
+        return values[0][0] if values else None
+
+    meta = {
+        "title": first("title"),
+        "authors": [v[0] for v in book.get_metadata("DC", "creator") if v[0]],
+        "publisher": first("publisher"),
+    }
+    raw_date = first("date")
+    if raw_date:
+        year_match = re.search(r"\d{4}", str(raw_date))
+        if year_match:
+            meta["year"] = int(year_match.group(0))
+    return meta
+
+
+def extract_epub(epub_path: Path, output_dir: Path) -> dict:
     """Extract an EPUB to JSON blocks + markdown.
 
     Args:
         epub_path: Path to the EPUB file
-        book_id: Book ID for naming output files
         output_dir: Directory to write output files
 
     Returns:
-        Dict with 'success', 'chunks_json', 'markdown', 'error',
-        'block_count', 'chapter_count'
+        Dict with 'success', 'error', 'block_count', 'chapter_count', and
+        'metadata' (title/authors/publisher/year from the OPF)
     """
     result = {
-        "book_id": book_id,
         "success": False,
         "error": None,
         "block_count": 0,
         "chapter_count": 0,
+        "metadata": {},
     }
 
     try:
@@ -102,6 +121,8 @@ def extract_epub(epub_path: Path, book_id: int, output_dir: Path) -> dict:
     except Exception as e:
         result["error"] = f"Failed to read EPUB: {e}"
         return result
+
+    result["metadata"] = _opf_metadata(book)
 
     all_blocks = []
     md_parts = []

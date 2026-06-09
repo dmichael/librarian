@@ -99,6 +99,41 @@ class TestQdrantFileStore:
         store2 = temp_store.get_llama_store("test")
         assert store1 is store2
 
+    def test_text_search(self, temp_store):
+        """text_search should find case-insensitive substrings, honoring filters."""
+        from qdrant_client.models import Distance, PointStruct, VectorParams
+
+        temp_store.client.create_collection(
+            collection_name="test_text",
+            vectors_config=VectorParams(size=4, distance=Distance.COSINE),
+        )
+        temp_store.client.upsert(
+            collection_name="test_text",
+            points=[
+                PointStruct(
+                    id=1,
+                    vector=[0.1] * 4,
+                    payload={"text": "Error code E-4501 in the manual", "book_id": 1},
+                ),
+                PointStruct(
+                    id=2,
+                    vector=[0.2] * 4,
+                    payload={"text": "Unrelated content", "book_id": 2},
+                ),
+            ],
+        )
+
+        results = temp_store.text_search("test_text", "e-4501")
+        assert len(results) == 1
+        assert "E-4501" in results[0][0]
+
+        # book_id filter excludes the matching chunk
+        assert temp_store.text_search("test_text", "e-4501", book_id=2) == []
+
+    def test_text_search_missing_collection(self, temp_store):
+        """text_search on a missing collection returns empty list."""
+        assert temp_store.text_search("nonexistent", "anything") == []
+
 
 class TestFactory:
     """Tests for get_vector_store factory function."""
@@ -181,118 +216,6 @@ class TestGetCollectionNames:
             "equations": "my_equations",
             "chapters": "my_chapters",
         }
-
-
-class TestLanceDBStore:
-    """Tests for LanceDBStore backend (requires lancedb installed)."""
-
-    @pytest.fixture
-    def temp_lancedb_store(self):
-        """Create a temporary LanceDBStore for testing."""
-        try:
-            from librarian.vectorstore.lancedb_store import LanceDBStore, LANCEDB_AVAILABLE
-        except ImportError:
-            pytest.skip("lancedb not installed")
-            return
-
-        if not LANCEDB_AVAILABLE:
-            pytest.skip("lancedb not installed")
-            return
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = LanceDBStore(
-                uri=Path(tmpdir),
-                default_collection="test_collection",
-            )
-            yield store
-
-    def test_implements_protocol(self, temp_lancedb_store):
-        """Store should implement LibrarianVectorStore protocol."""
-        assert isinstance(temp_lancedb_store, LibrarianVectorStore)
-
-    def test_requires_lock(self, temp_lancedb_store):
-        """LanceDB should not require external locking."""
-        assert temp_lancedb_store.requires_lock() is False
-
-    def test_collection_not_exists(self, temp_lancedb_store):
-        """Non-existent collection should return False."""
-        assert temp_lancedb_store.collection_exists("nonexistent") is False
-
-
-class TestQdrantServerStore:
-    """Tests for QdrantServerStore backend."""
-
-    def test_requires_lock(self):
-        """Server store should not require external locking."""
-        from librarian.vectorstore.qdrant_server import QdrantServerStore
-
-        store = QdrantServerStore(host="localhost", port=6333)
-        assert store.requires_lock() is False
-
-    def test_implements_protocol(self):
-        """Store should implement LibrarianVectorStore protocol."""
-        from librarian.vectorstore.qdrant_server import QdrantServerStore
-
-        store = QdrantServerStore(host="localhost", port=6333)
-        assert isinstance(store, LibrarianVectorStore)
-
-
-class TestChromaStore:
-    """Tests for ChromaStore backend (requires chromadb installed)."""
-
-    @pytest.fixture
-    def temp_chroma_store(self):
-        """Create a temporary ChromaStore for testing."""
-        try:
-            from librarian.vectorstore.chroma_store import ChromaStore, CHROMA_AVAILABLE
-        except ImportError:
-            pytest.skip("chromadb not installed")
-            return
-
-        if not CHROMA_AVAILABLE:
-            pytest.skip("chromadb not installed")
-            return
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = ChromaStore(
-                path=Path(tmpdir),
-                default_collection="test_collection",
-            )
-            yield store
-
-    def test_implements_protocol(self, temp_chroma_store):
-        """Store should implement LibrarianVectorStore protocol."""
-        assert isinstance(temp_chroma_store, LibrarianVectorStore)
-
-    def test_requires_lock(self, temp_chroma_store):
-        """Chroma should not require external locking."""
-        assert temp_chroma_store.requires_lock() is False
-
-    def test_collection_not_exists(self, temp_chroma_store):
-        """Non-existent collection should return False."""
-        assert temp_chroma_store.collection_exists("nonexistent") is False
-
-    def test_get_indexed_ids_empty(self, temp_chroma_store):
-        """Empty/non-existent collection should return empty set."""
-        result = temp_chroma_store.get_indexed_ids("nonexistent")
-        assert result == set()
-
-    def test_llama_store_property(self, temp_chroma_store):
-        """llama_store should return ChromaVectorStore."""
-        store = temp_chroma_store.llama_store
-        assert store is not None
-        assert hasattr(store, "add")
-
-    def test_get_llama_store_caching(self, temp_chroma_store):
-        """get_llama_store should cache stores."""
-        store1 = temp_chroma_store.get_llama_store("test")
-        store2 = temp_chroma_store.get_llama_store("test")
-        assert store1 is store2
-
-    def test_collection_exists_after_create(self, temp_chroma_store):
-        """Collection should exist after get_llama_store creates it."""
-        temp_chroma_store.get_llama_store("new_collection")
-        assert temp_chroma_store.collection_exists("new_collection") is True
 
 
 @pytest.mark.skipif(not _pg_reachable(), reason="PostgreSQL on localhost not reachable")

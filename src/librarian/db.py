@@ -72,7 +72,13 @@ def get_engine(config: dict | None = None):
     if _engine is None:
         if config is None:
             config = load_config()
-        url = config["vector_store"]["pgvector_url"]
+        url = config.get("vector_store", {}).get("pgvector_url")
+        if not url:
+            raise RuntimeError(
+                "Books database URL not configured. Set vector_store.pgvector_url "
+                "in settings (or the LIBRARIAN_DB_URL env var). The books table "
+                "lives in PostgreSQL even when the vector backend is not pgvector."
+            )
         sa_url = url.replace("postgresql://", "postgresql+psycopg2://")
         _engine = create_engine(sa_url, pool_size=10, max_overflow=5, pool_pre_ping=True)
     return _engine
