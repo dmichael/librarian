@@ -17,6 +17,34 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from librarian.htmltext import html_to_text
 
+# Chapter heading grammar — the single owner of "what counts as a chapter
+# head", shared by the markdown path (parse_structure) and the block path
+# (extract_structure_from_blocks). Each pattern yields (number, title).
+CHAPTER_HEADING_PATTERNS = [
+    # "Chapter 5: Title" or "Chapter 5"
+    re.compile(r'^Chapter\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
+    # "Rule No. 3: Title" or "Rule No. 3"
+    re.compile(r'^Rule\s+No\.?\s*(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
+    # "Part 2: Title"
+    re.compile(r'^Part\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
+    # "Cycle 5: Title" (e.g., Buzsáki)
+    re.compile(r'^Cycle\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
+    # "Lesson 3: Title"
+    re.compile(r'^Lesson\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
+    # "1. TITLE" or "3. Title" (numbered with dot, common in many books)
+    re.compile(r'^(\d{1,2})\.\s+(.+)$'),
+]
+
+
+def match_chapter_heading(text: str) -> tuple[int, str] | None:
+    """Match text against the chapter grammar, returning (number, title) or None."""
+    cleaned = re.sub(r'\*{1,2}', '', text).strip()
+    for pattern in CHAPTER_HEADING_PATTERNS:
+        m = pattern.match(cleaned)
+        if m:
+            return int(m.group(1)), (m.group(2).strip() if m.group(2) else "")
+    return None
+
 
 class Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -137,13 +165,9 @@ def parse_structure(content: str, title: str = "") -> DocumentStructure:
     current_book_section: BookSection | None = None
     last_page: int | None = None
 
-    # Patterns for structure detection
-    # Match: # Chapter N, # Chapter N: Title, # Chapter N Title (no separator)
-    # Also matches: Rule No. N, Part N, Cycle N, Lesson N, "N. Title"
-    chapter_num_pattern = re.compile(
-        r'^#\s+\*{0,2}(?:Chapter|Rule\s+No\.?|Part|Cycle|Lesson)\s+(\d+)\*{0,2}(?:\s*[:\-–]?\s*(.*))?$',
-        re.IGNORECASE
-    )
+    # Chapter heads must be level-1 headers in the markdown path; the
+    # heading grammar itself is shared with the block path.
+    chapter_head_prefix = re.compile(r'^#\s+(.+)$')
     # Title can be level 1/2/3 header, with or without bold
     # Match: # **Title**, ### **Title**, # Title (non-bold)
     chapter_title_pattern = re.compile(r'^#{1,3}\s+\*{0,2}([^#\n]+?)\*{0,2}\s*$')
@@ -182,14 +206,14 @@ def parse_structure(content: str, title: str = "") -> DocumentStructure:
             continue
 
         # Check for chapter header
-        ch_match = chapter_num_pattern.match(line)
-        if ch_match:
+        head_match = chapter_head_prefix.match(line)
+        ch_result = match_chapter_heading(head_match.group(1)) if head_match else None
+        if ch_result:
             # Save previous chapter's page end
             if current_chapter and last_page:
                 current_chapter.page_end = last_page
 
-            ch_num = int(ch_match.group(1))
-            ch_title = ch_match.group(2) or ""
+            ch_num, ch_title = ch_result
 
             # Look for title on next few lines if not inline (skip empty lines)
             if not ch_title:
@@ -348,33 +372,6 @@ def extract_structure_from_blocks(blocks: list[dict], title: str = "") -> Docume
     """
     structure = DocumentStructure(title=title)
 
-    # Multiple patterns for chapter detection, tried in order.
-    # Each returns (chapter_number, title_text) from match groups 1 and 2.
-    chapter_patterns = [
-        # "Chapter 5: Title" or "Chapter 5"
-        re.compile(r'^Chapter\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
-        # "Rule No. 3: Title" or "Rule No. 3"
-        re.compile(r'^Rule\s+No\.?\s*(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
-        # "Part 2: Title" or "Part II"
-        re.compile(r'^Part\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
-        # "Cycle 5: Title" (e.g., Buzsáki)
-        re.compile(r'^Cycle\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
-        # "Lesson 3: Title"
-        re.compile(r'^Lesson\s+(\d+)\s*[:\-–]?\s*(.*)$', re.IGNORECASE),
-        # "1. TITLE" or "3. Title" (numbered with dot, common in many books)
-        re.compile(r'^(\d{1,2})\.\s+(.+)$'),
-    ]
-
-    def _match_chapter(text: str) -> tuple[int, str] | None:
-        """Try all chapter patterns, return (number, title) or None."""
-        # Strip bold markers
-        cleaned = re.sub(r'\*{1,2}', '', text).strip()
-        for pattern in chapter_patterns:
-            m = pattern.match(cleaned)
-            if m:
-                return int(m.group(1)), (m.group(2).strip() if m.group(2) else "")
-        return None
-
     # First pass: collect all chapter occurrences and detect TOC
     chapter_occurrences: list[tuple[int, int, str, int]] = []  # (block_idx, ch_num, title, page)
     for idx, block in enumerate(blocks):
@@ -384,7 +381,7 @@ def extract_structure_from_blocks(blocks: list[dict], title: str = "") -> Docume
         text = block.get('text') or _strip_html(block.get('html', ''))
         # Strip markdown heading markers
         text = re.sub(r'^#+\s*', '', text).strip()
-        result = _match_chapter(text)
+        result = match_chapter_heading(text)
         if result:
             ch_num, ch_title = result
             page = block.get('page') or 0

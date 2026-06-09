@@ -21,6 +21,8 @@ from pathlib import Path
 
 from pylatexenc.latex2text import LatexNodes2Text
 
+from librarian.htmltext import html_to_text
+
 _latex_converter = LatexNodes2Text()
 
 
@@ -82,19 +84,23 @@ def extract_equations_from_blocks(
     """
     equations = []
 
+    from librarian.extractors.marker import parse_equation_html
+
     for i, block in enumerate(blocks):
-        if block.get("block_type") != "Equation":
+        if str(block.get("block_type", "")).lower() != "equation":
             continue
 
         # Try to get LaTeX from different sources
         latex = None
+        eq_num = None
 
-        # Option 1: Raw HTML with MathML
+        # Option 1: Raw HTML with MathML — marker.py owns the parsing quirks
+        # (latex normalization and the three equation-number conventions).
         html = block.get("html", "")
         if html:
-            latex_match = re.search(r"<math[^>]*>(.+?)</math>", html, re.DOTALL)
-            if latex_match:
-                latex = latex_match.group(1).strip()
+            parsed = parse_equation_html(html)
+            if parsed:
+                latex, eq_num = parsed
 
         # Option 2: Processed text field (from load_extracted_blocks)
         if not latex:
@@ -119,8 +125,7 @@ def extract_equations_from_blocks(
             text = prev_block.get("text", "")
             if not text:
                 # Try to extract from HTML
-                prev_html = prev_block.get("html", "")
-                text = re.sub(r"<[^>]+>", " ", prev_html).strip()
+                text = html_to_text(prev_block.get("html", ""), "flat")
             if text:
                 context_before_parts.insert(0, text)
                 chars_collected += len(text)
@@ -135,8 +140,7 @@ def extract_equations_from_blocks(
                 continue
             text = next_block.get("text", "")
             if not text:
-                next_html = next_block.get("html", "")
-                text = re.sub(r"<[^>]+>", " ", next_html).strip()
+                text = html_to_text(next_block.get("html", ""), "flat")
             if text:
                 context_after_parts.append(text)
                 chars_collected += len(text)
@@ -146,18 +150,19 @@ def extract_equations_from_blocks(
         context_before = " ".join(context_before_parts)[-context_chars:]
         context_after = " ".join(context_after_parts)[:context_chars]
 
-        # Look for equation number in the LaTeX or nearby text
-        eq_num = None
-        num_patterns = [
-            r"\((\d+)\)",  # (4)
-            r"\\tag\{(\d+)\}",  # \tag{4}
-            r"[Ee]q(?:uation)?\.?\s*(\d+)",  # Eq. 4
-        ]
-        for pat in num_patterns:
-            num_match = re.search(pat, latex + " " + context_after[:100])
-            if num_match:
-                eq_num = num_match.group(1)
-                break
+        # Fallback when the HTML parse found no number: look for one in the
+        # LaTeX (text path) or nearby trailing context.
+        if eq_num is None:
+            num_patterns = [
+                r"\((\d+)\)",  # (4)
+                r"\\tag\{(\d+)\}",  # \tag{4}
+                r"[Ee]q(?:uation)?\.?\s*(\d+)",  # Eq. 4
+            ]
+            for pat in num_patterns:
+                num_match = re.search(pat, latex + " " + context_after[:100])
+                if num_match:
+                    eq_num = num_match.group(1)
+                    break
 
         # Generate natural language description
         try:
@@ -412,7 +417,7 @@ def prepare_equation_documents(
 
     Args:
         equations: Extracted equations from a book
-        book_metadata: Calibre metadata for the source book
+        book_metadata: Book metadata for the source book
 
     Returns:
         List of document dicts ready for vector store insertion

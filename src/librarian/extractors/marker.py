@@ -244,8 +244,13 @@ def parse_equations(blocks: list[dict]) -> list[Equation]:
     return equations
 
 
-def _parse_equation_block(block: dict, block_index: int) -> Equation | None:
-    html = block.get("html") or ""
+def parse_equation_html(html: str) -> tuple[str, str | None] | None:
+    """Extract (latex, equation_number) from an equation block's HTML.
+
+    This is the single owner of Marker's equation-numbering quirks — any
+    consumer of equation blocks (equations.json artifact, indexing) must go
+    through it rather than re-parsing <math> elements.
+    """
     math_match = _MATH_RE.search(html)
     if not math_match:
         return None
@@ -266,6 +271,14 @@ def _parse_equation_block(block: dict, block_index: int) -> Equation | None:
     latex = latex.rstrip(",").rstrip(".").rstrip().strip()
     if not latex:
         return None
+    return latex, number
+
+
+def _parse_equation_block(block: dict, block_index: int) -> Equation | None:
+    parsed = parse_equation_html(block.get("html") or "")
+    if not parsed:
+        return None
+    latex, number = parsed
 
     page = block.get("page")
     return Equation(

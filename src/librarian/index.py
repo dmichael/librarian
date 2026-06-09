@@ -1,6 +1,6 @@
 """Index extracted books into vector store.
 
-Pure business logic — no CLI, no Calibre. Functions here take
+Pure business logic. Functions here take
 content and metadata, create nodes, and write to vector stores.
 
 The MCP server's index worker is the caller (librarian.mcp_server).
@@ -479,10 +479,10 @@ def index_book(
     """Index a single book and return (text_chunks, equation_count, chapter_count).
 
     Args:
-        book_id: Calibre book ID
+        book_id: Book ID
         content: Augmented markdown (with equation descriptions)
         raw_content: Original markdown (for equation extraction)
-        metadata: Calibre metadata
+        metadata: Book metadata dict
         vector_store: Main text chunk store
         equation_store: Separate equation store (or None to skip)
         chapter_store: Chapter summary store (or None to skip)
