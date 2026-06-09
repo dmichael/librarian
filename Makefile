@@ -3,14 +3,13 @@
 # Usage:
 #   make              - Run full pipeline (intake → extract → index)
 #   make status       - Show pipeline state
-#   make extract      - Extract books locally (GPU-intensive, hours per book)
-#   make extract-cloud - Extract books on Modal A100s (parallel, ~$3-5/book)
 #   make index        - Index extracted books to vector store
+#   make modal-deploy - Deploy the Modal GPU extractor (offload for oversized PDFs)
 
 VENV := .venv/bin
 PYTHON ?= $(if $(wildcard $(VENV)/python),$(VENV)/python,python3)
 
-.PHONY: help index run build deploy ship preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality clean-extracted clean-extracted-confirm
+.PHONY: help index run build deploy ship preflight release db-migrate-safe db-migrate-snapshot test-baseline test-retrieval-quality clean-extracted clean-extracted-confirm modal-deploy
 
 .DEFAULT_GOAL := help
 
@@ -23,6 +22,9 @@ help:
 	@echo "  make build         build amd64 image on $(BUILD_SSH) from $(GIT_REMOTE)/main, push to $(REGISTRY)"
 	@echo "  make deploy        pull image on $(DEPLOY_CONTEXT) + compose up -d  (alembic runs at boot)"
 	@echo "  make run           run locally with docker compose (dev)"
+	@echo ""
+	@echo "Modal (cloud GPU offload for oversized PDFs):"
+	@echo "  make modal-deploy  deploy the Modal extractor (reads token from .env.production)"
 	@echo ""
 	@echo "Index / DB / tests:"
 	@echo "  make index                index extracted dirs under output_path"
@@ -187,3 +189,25 @@ deploy: preflight
 			-f docker-compose.prod.yml up -d --remove-orphans
 	$(DOCKER) --context $(DEPLOY_CONTEXT) compose \
 		-f docker-compose.prod.yml ps
+
+# === Modal: cloud GPU offload for oversized PDFs ===
+#
+# extract_routing.decide_backend sends documents whose raster burden is too
+# large for the shared Spark to Modal. Deploy the Modal function once; it builds
+# the image (marker models baked in) and registers the function at no idle cost
+# (scale-to-zero). Repeatable: re-running updates in place and only rebuilds the
+# image when its definition changes. Auth is read from .env.production, so this
+# is the single source of the Modal account.
+MODAL ?= $(VENV)/modal
+MODAL_APP ?= src/librarian/cloud_extract.py
+ENV_FILE ?= .env.production
+
+modal-deploy:
+	@test -f $(ENV_FILE) || (echo "ERROR: $(ENV_FILE) missing (needs MODAL_TOKEN_ID/SECRET)"; exit 1)
+	@test -x $(MODAL) || (echo "ERROR: modal CLI not at $(MODAL) — install the [cloud] extra: pip install -e '.[cloud]'"; exit 1)
+	@id=$$(grep -E '^MODAL_TOKEN_ID=' $(ENV_FILE) | cut -d= -f2- | tr -d '"\r'); \
+	 secret=$$(grep -E '^MODAL_TOKEN_SECRET=' $(ENV_FILE) | cut -d= -f2- | tr -d '"\r'); \
+	 test -n "$$id" || (echo "ERROR: MODAL_TOKEN_ID not found in $(ENV_FILE)"; exit 1); \
+	 test -n "$$secret" || (echo "ERROR: MODAL_TOKEN_SECRET not found in $(ENV_FILE)"; exit 1); \
+	 echo "Deploying $(MODAL_APP) to Modal (builds image on first run / when changed)..."; \
+	 MODAL_TOKEN_ID=$$id MODAL_TOKEN_SECRET=$$secret $(MODAL) deploy $(MODAL_APP)

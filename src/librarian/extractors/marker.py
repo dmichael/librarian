@@ -76,6 +76,8 @@ def extract(
         return _extract_via_spark(
             source, book_dir, spark_url=spark_url, timeout=timeout, write_html=write_html
         )
+    elif backend == "modal":
+        return _extract_via_modal(source, book_dir)
     else:
         raise ValueError(f"Unknown marker backend: {backend!r}")
 
@@ -94,10 +96,6 @@ def _extract_via_spark(
     write_html: bool,
 ) -> dict:
     url = f"{spark_url.rstrip('/')}/marker/upload"
-    _prepare_output_layout(book_dir)
-    marker_output_dir = marker_dir(book_dir)
-    marker_output_dir.mkdir(parents=True, exist_ok=True)
-
     print(f"  Extracting via Spark marker service ({url})...", flush=True)
 
     payload = _post_to_spark(url, source, output_format="chunks", timeout=timeout)
@@ -111,11 +109,56 @@ def _extract_via_spark(
     except json.JSONDecodeError as e:
         raise MarkerExtractionError(f"Spark chunks JSON malformed: {e}") from e
 
+    result = _write_marker_artifacts(
+        book_dir, chunks_data=chunks_data, metadata=payload.get("metadata", {})
+    )
+    if write_html:
+        _write_html_artifacts(url, source, book_dir, timeout)
+    return result
+
+
+def _extract_via_modal(source: Path, book_dir: Path) -> dict:
+    """Extract via the deployed Modal GPU function (offload path for large scans).
+
+    The Modal function returns marker chunks + metadata in the same shape as the
+    Spark backend, so the artifacts written are byte-compatible. No HTML
+    companion on this path (review-only; skipped to avoid a second GPU pass).
+    """
+    from librarian import cloud_extract
+
+    print("  Extracting via Modal (deployed GPU function)...", flush=True)
+    result = cloud_extract.run_modal_extraction(source)
+
+    if not result.get("success"):
+        raise MarkerExtractionError(
+            f"Modal extraction failed: {result.get('error', 'unknown error')}"
+        )
+    chunks_data = result.get("chunks")
+    if not chunks_data:
+        raise MarkerExtractionError("Modal response missing chunks")
+
+    return _write_marker_artifacts(
+        book_dir, chunks_data=chunks_data, metadata=result.get("metadata") or {}
+    )
+
+
+def _write_marker_artifacts(
+    book_dir: Path, *, chunks_data: dict, metadata: dict,
+) -> dict:
+    """Write the marker artifacts both backends share; return {"page_count": N}.
+
+    Clears stale marker output, writes document.json / metadata.json, and derives
+    document.md and equations.json locally from the chunks. The HTML companion (if
+    any) is added by the caller. Clearing happens here, after a backend has data
+    in hand, so a failed extraction never destroys the previous artifacts.
+    """
+    _prepare_output_layout(book_dir)
+    marker_output_dir = marker_dir(book_dir)
+    marker_output_dir.mkdir(parents=True, exist_ok=True)
+
     chunks_path = marker_output_dir / "document.json"
     chunks_path.write_text(json.dumps(chunks_data, indent=2))
-    (marker_output_dir / "metadata.json").write_text(
-        json.dumps(payload.get("metadata", {}), indent=2)
-    )
+    (marker_output_dir / "metadata.json").write_text(json.dumps(metadata or {}, indent=2))
     (marker_output_dir / "document.md").write_text(chunks_to_markdown(chunks_path))
 
     equations = parse_equations(chunks_data.get("blocks", []))
@@ -123,11 +166,7 @@ def _extract_via_spark(
         json.dumps([eq.model_dump(exclude_none=True) for eq in equations], indent=2) + "\n"
     )
 
-    if write_html:
-        _write_html_artifacts(url, source, book_dir, timeout)
-
-    marker_meta = payload.get("metadata", {})
-    page_count = marker_meta.get("page_count") or len(marker_meta.get("page_stats", []))
+    page_count = (metadata or {}).get("page_count") or len((metadata or {}).get("page_stats", []))
     return {"page_count": page_count or None}
 
 

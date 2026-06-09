@@ -105,12 +105,11 @@ def extract_pdf(
             f"(img_mpix={sig.img_mpix}, page_mpix={sig.page_megapix}, pages={sig.pages})",
             flush=True,
         )
-        # Modal backend not wired yet: log the decision and run on Spark for now.
-        # When the Modal extractor lands, dispatch here on decision.backend
-        # instead of always calling marker.extract(..., backend="spark").
+        # Route oversized scans to Modal (deployed GPU function); everything else
+        # to the local Spark. The Modal backend ignores spark_url.
         try:
             marker_result = marker.extract(
-                source, output_dir, backend="spark", spark_url=spark_url,
+                source, output_dir, backend=decision.backend, spark_url=spark_url,
             )
             meta_parts.append(DocumentMetadata(
                 format="pdf",
