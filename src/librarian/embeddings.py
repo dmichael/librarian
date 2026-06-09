@@ -9,6 +9,8 @@ import threading
 
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
+from librarian.config import DEFAULT_EMBED_MODEL
+
 BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
 _model: HuggingFaceEmbedding | None = None
@@ -26,7 +28,7 @@ def get_embed_model(config: dict) -> HuggingFaceEmbedding:
     global _model, _model_key
 
     emb = config.get("embedding", {})
-    model_name = emb.get("model", "BAAI/bge-base-en-v1.5")
+    model_name = emb.get("model", DEFAULT_EMBED_MODEL)
     device = emb.get("device", "cpu")
     batch_size = emb.get("batch_size", 48)
     key = (model_name, device, batch_size)

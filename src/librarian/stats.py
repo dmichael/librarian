@@ -19,7 +19,7 @@ def get_block_type_distribution(config: dict) -> dict[str, int]:
     store = get_vector_store(config)
     collection_names = get_collection_names(config)
 
-    collection_name = collection_names.get("full", "librarian_full")
+    collection_name = collection_names["full"]
     counts = store.get_metadata_counts(collection_name, "block_type")
     # Sort by count descending
     return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
@@ -59,7 +59,7 @@ def get_indexed_books(config: dict) -> list[dict]:
     store = get_vector_store(config)
     collection_names = get_collection_names(config)
 
-    collection_name = collection_names.get("full", "librarian_full")
+    collection_name = collection_names["full"]
     indexed_ids = store.get_indexed_ids(collection_name)
 
     db_books = get_book_metadata(list(indexed_ids), config)
@@ -86,11 +86,13 @@ def get_indexed_books(config: dict) -> list[dict]:
 
 def get_embedding_info(config: dict) -> dict:
     """Get embedding model configuration."""
+    from librarian.config import DEFAULT_EMBED_DIM, DEFAULT_EMBED_MODEL
+
     embedding_config = config.get("embedding", {})
     return {
-        "model": embedding_config.get("model", "BAAI/bge-base-en-v1.5"),
+        "model": embedding_config.get("model", DEFAULT_EMBED_MODEL),
         "device": embedding_config.get("device", "cpu"),
-        "dimensions": 768,  # BGE-base default
+        "dimensions": embedding_config.get("dim", DEFAULT_EMBED_DIM),
     }
 
 
@@ -200,7 +202,7 @@ def get_book_toc(config: dict, book_id: int) -> list[str]:
     store = get_vector_store(config)
     collection_names = get_collection_names(config)
 
-    collection_name = collection_names.get("full", "librarian_full")
+    collection_name = collection_names["full"]
     results = store.get_documents_by_filter(
         collection_name,
         {"book_id": book_id, "block_type": "TableOfContents"},

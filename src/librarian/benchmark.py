@@ -297,30 +297,28 @@ def run_benchmarks(
         BenchmarkReport with aggregate metrics
     """
     from llama_index.core import Settings, VectorStoreIndex
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+    from librarian.config import DEFAULT_EMBED_MODEL, DEFAULT_VECTOR_BACKEND
+    from librarian.embeddings import get_embed_model
 
     queries = queries or BENCHMARK_QUERIES
     vs_config = config.get("vector_store", {})
-    backend = vs_config.get("backend", "qdrant-file")
+    backend = vs_config.get("backend", DEFAULT_VECTOR_BACKEND)
     collection_names = get_collection_names(config)
 
     if verbose:
         print(f"Running benchmarks against backend: {backend}")
         print(f"Collections: {collection_names}")
 
-    # Set up embedding model
-    embed_config = config.get("embedding", {})
-    model_name = embed_config.get("model", "BAAI/bge-base-en-v1.5")
+    # Set up embedding model (CPU for consistent benchmarking)
+    embed_config = dict(config.get("embedding", {}))
+    embed_config.setdefault("model", DEFAULT_EMBED_MODEL)
+    embed_config["device"] = "cpu"
 
     if verbose:
-        print(f"Loading embedding model: {model_name}")
+        print(f"Loading embedding model: {embed_config['model']}")
 
-    embed_model = HuggingFaceEmbedding(
-        model_name=model_name,
-        device="cpu",  # Use CPU for consistent benchmarking
-        query_instruction="Represent this sentence for searching relevant passages: ",
-    )
-    Settings.embed_model = embed_model
+    Settings.embed_model = get_embed_model({"embedding": embed_config})
 
     # Get vectorstore
     store = get_vector_store(config)

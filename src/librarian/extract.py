@@ -6,10 +6,10 @@ caller (librarian.mcp_server).
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
+from librarian.config import load_config
 from librarian.document_metadata import (
     DocumentMetadata,
     compute_file_hash,
@@ -21,7 +21,9 @@ from librarian.extract_routing import route_pdf
 
 
 
-def extract(source: Path, output_dir: Path) -> tuple[list[str], DocumentMetadata]:
+def extract(
+    source: Path, output_dir: Path, config: dict | None = None,
+) -> tuple[list[str], DocumentMetadata]:
     """Extract a single file to output_dir.
 
     Returns (errors, metadata). Errors list is empty on full success.
@@ -31,7 +33,7 @@ def extract(source: Path, output_dir: Path) -> tuple[list[str], DocumentMetadata
     source_hash = compute_file_hash(source)
 
     if suffix == ".pdf":
-        errors, meta = extract_pdf(source, output_dir)
+        errors, meta = extract_pdf(source, output_dir, config)
     elif suffix == ".epub":
         errors, meta = _extract_epub_with_metadata(source, output_dir)
     else:
@@ -74,7 +76,7 @@ def _extract_epub_with_metadata(
 
 
 def extract_pdf(
-    source: Path, output_dir: Path,
+    source: Path, output_dir: Path, config: dict | None = None,
 ) -> tuple[list[str], DocumentMetadata]:
     """Run every PDF extractor over source. Each extractor owns its raw/<name>/.
 
@@ -86,12 +88,15 @@ def extract_pdf(
     errors: list[str] = []
     meta_parts: list[DocumentMetadata] = []
 
-    spark_url = os.environ.get("LIBRARIAN_SPARK_URL")
-    grobid_url = os.environ.get("GROBID_BASE_URL")
+    if config is None:
+        config = load_config()
+    extractors_config = config.get("extractors", {})
+    spark_url = extractors_config.get("spark_url")
+    grobid_url = extractors_config.get("grobid_url")
 
     # Misconfiguration, not a runtime hiccup: with neither extractor configured
     # a PDF run would silently produce nothing and still look "extracted". Fail
-    # loudly instead so the caller (MCP worker / CLI) surfaces it.
+    # loudly instead so the caller (the MCP worker) surfaces it.
     if not spark_url and not grobid_url:
         raise RuntimeError(
             "extraction not configured: set LIBRARIAN_SPARK_URL (Marker) and/or "

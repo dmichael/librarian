@@ -128,7 +128,7 @@ def extract_worker(book_id: int, source_path: str, output_dir: str, config: dict
             config,
         )
         t0 = time.monotonic()
-        errors, _meta = extract(source, book_output)
+        errors, _meta = extract(source, book_output, config)
         extraction_duration = time.monotonic() - t0
 
         if ext == ".pdf":

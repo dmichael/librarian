@@ -1,9 +1,18 @@
-"""Configuration loading."""
+"""Configuration loading.
+
+Also the single home for cross-module defaults: any constant that more than
+one module needs (embedding model, vector backend) lives here so it can't
+drift between call sites.
+"""
 
 import os
 from pathlib import Path
 
 import yaml
+
+DEFAULT_EMBED_MODEL = "BAAI/bge-base-en-v1.5"
+DEFAULT_EMBED_DIM = 768
+DEFAULT_VECTOR_BACKEND = "qdrant-file"
 
 
 def find_config_file() -> Path:
@@ -31,6 +40,12 @@ def load_config() -> dict:
 
     if device := os.getenv("LIBRARIAN_EMBEDDING_DEVICE"):
         config.setdefault("embedding", {})["device"] = device
+
+    if spark_url := os.getenv("LIBRARIAN_SPARK_URL"):
+        config.setdefault("extractors", {})["spark_url"] = spark_url
+
+    if grobid_url := os.getenv("GROBID_BASE_URL"):
+        config.setdefault("extractors", {})["grobid_url"] = grobid_url
 
     if data_root := os.getenv("LIBRARIAN_DATA_ROOT"):
         config["output_path"] = f"{data_root}/converted"

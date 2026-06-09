@@ -27,11 +27,11 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from librarian.config import load_config
+from librarian.vectorstore import get_collection_names
 
+# LlamaIndex prefixes collection tables with 'data_'
 VECTOR_TABLES = [
-    "data_librarian_full",
-    "data_librarian_equations",
-    "data_librarian_chapters",
+    f"data_{name}" for name in get_collection_names(load_config()).values()
 ]
 
 

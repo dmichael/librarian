@@ -14,7 +14,11 @@ Usage:
 
 from pathlib import Path
 
-from librarian.config import expand_path
+from librarian.config import (
+    DEFAULT_EMBED_DIM,
+    DEFAULT_VECTOR_BACKEND,
+    expand_path,
+)
 from librarian.vectorstore.protocol import LibrarianVectorStore
 
 # Re-export protocol for type hints
@@ -55,7 +59,7 @@ def get_vector_store(
         return _vector_store_instance
 
     vs_config = config.get("vector_store", {})
-    backend = vs_config.get("backend", "qdrant-file")
+    backend = vs_config.get("backend", DEFAULT_VECTOR_BACKEND)
 
     # Get default collection from config if not overridden
     if default_collection is None:
@@ -76,7 +80,7 @@ def get_vector_store(
             connection_string=vs_config.get(
                 "pgvector_url", "postgresql://localhost:5432/librarian"
             ),
-            embed_dim=config.get("embedding", {}).get("dim", 768),
+            embed_dim=config.get("embedding", {}).get("dim", DEFAULT_EMBED_DIM),
             default_collection=default_collection,
         )
 

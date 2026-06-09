@@ -30,13 +30,17 @@ Usage: python scripts/audit_corpus.py [book_ids...]
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-OUTPUT_ROOT = Path(os.environ.get("LIBRARIAN_OUTPUT", Path.home() / "data" / "librarian" / "converted"))
+# Allow running as a standalone script from repo root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from librarian.config import expand_path, load_config
+
+OUTPUT_ROOT = expand_path(load_config()["output_path"])
 TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 
 

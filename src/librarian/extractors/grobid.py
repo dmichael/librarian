@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -615,7 +614,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    base_url = args.grobid_url or os.getenv("GROBID_BASE_URL")
+    from librarian.config import load_config
+
+    base_url = args.grobid_url or load_config().get("extractors", {}).get("grobid_url")
     if not base_url:
         print("Set --grobid-url or GROBID_BASE_URL", file=sys.stderr)
         raise SystemExit(2)
