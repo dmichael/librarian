@@ -23,9 +23,11 @@ from mcp.server.fastmcp import FastMCP
 from librarian.config import load_config
 from librarian.db import Book, get_session
 from librarian.metadata_types import (
+    META_AUTHORS,
     META_BOOK_ID,
     META_LIBRARY,
     META_SUBJECTS,
+    META_TITLE,
     build_search_result_row,
     build_text_search_result_row,
     serialize_list_metadata,
@@ -34,6 +36,27 @@ from librarian.metadata_types import (
 log = logging.getLogger(__name__)
 
 mcp = FastMCP("librarian", host="0.0.0.0", port=8811)
+
+
+def _book_vector_metadata_updates(
+    *,
+    title: str | None = None,
+    authors: list[str] | None = None,
+    subjects: list[str] | None = None,
+    library: str | None = None,
+) -> dict[str, str]:
+    """Build vector metadata updates for mutable book fields."""
+    vector_updates = {}
+    if title is not None:
+        vector_updates[META_TITLE] = title
+    if authors is not None:
+        vector_updates[META_AUTHORS] = ", ".join(authors)
+    if library is not None:
+        vector_updates[META_LIBRARY] = library
+    if subjects is not None:
+        vector_updates[META_SUBJECTS] = serialize_list_metadata(subjects)
+    return vector_updates
+
 
 # ---------------------------------------------------------------------------
 # Background task helpers
@@ -651,12 +674,14 @@ def update_book(
 
         session.commit()
 
-        # Propagate searchable metadata to pgvector chunks
-        vector_updates = {}
-        if library is not None:
-            vector_updates[META_LIBRARY] = library
-        if subjects is not None:
-            vector_updates[META_SUBJECTS] = serialize_list_metadata(subjects)
+        # Propagate mutable display/filter metadata to pgvector chunks so
+        # retrieval results stay aligned with the canonical books row.
+        vector_updates = _book_vector_metadata_updates(
+            title=title,
+            authors=authors,
+            subjects=subjects,
+            library=library,
+        )
 
         chunks_updated = 0
         if vector_updates:

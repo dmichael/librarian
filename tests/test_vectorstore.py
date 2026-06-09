@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from librarian.vectorstore.pgvector_store import _metadata_with_node_content_updates
 from librarian.vectorstore import (
     get_collection_names,
     get_vector_store,
@@ -30,6 +31,30 @@ def _pg_reachable(host="localhost", port=5432, timeout=2) -> bool:
             return True
     except OSError:
         return False
+
+
+def test_metadata_with_node_content_updates_patches_nested_llama_metadata():
+    metadata = {
+        "book_id": 169,
+        "authors": "",
+        "_node_content": (
+            '{"metadata": {"book_id": 169, "authors": "", '
+            '"subjects": "[]"}, "text": ""}'
+        ),
+    }
+
+    updated = _metadata_with_node_content_updates(
+        metadata,
+        {
+            "authors": "Guglielmo Iozzia",
+            "subjects": '["cs/small-language-models"]',
+        },
+    )
+
+    assert updated["authors"] == "Guglielmo Iozzia"
+    assert updated["subjects"] == '["cs/small-language-models"]'
+    assert '"authors": "Guglielmo Iozzia"' in updated["_node_content"]
+    assert '"subjects": "[\\"cs/small-language-models\\"]"' in updated["_node_content"]
 
 
 class TestQdrantFileStore:

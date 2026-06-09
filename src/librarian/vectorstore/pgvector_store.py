@@ -8,6 +8,7 @@ Note: pgvector is an optional dependency. Install with:
     pip install -e ".[pgvector]"
 """
 
+import json
 import logging
 
 try:
@@ -20,13 +21,38 @@ except ImportError:
 
 try:
     import psycopg
+    from psycopg.types.json import Jsonb
 
     PSYCOPG_AVAILABLE = True
 except ImportError:
     PSYCOPG_AVAILABLE = False
+    Jsonb = None
     psycopg = None
 
 logger = logging.getLogger(__name__)
+
+
+def _metadata_with_node_content_updates(metadata: dict, updates: dict[str, str]) -> dict:
+    """Apply metadata updates to both pgvector metadata and LlamaIndex node JSON."""
+    updated = dict(metadata or {})
+    updated.update(updates)
+
+    raw_node_content = updated.get("_node_content")
+    if not isinstance(raw_node_content, str):
+        return updated
+
+    try:
+        node_content = json.loads(raw_node_content)
+    except json.JSONDecodeError:
+        return updated
+
+    node_metadata = node_content.get("metadata")
+    if not isinstance(node_metadata, dict):
+        return updated
+
+    node_metadata.update(updates)
+    updated["_node_content"] = json.dumps(node_content)
+    return updated
 
 
 class PgvectorStore:
@@ -257,7 +283,8 @@ class PgvectorStore:
     ) -> int:
         """Update metadata fields on all chunks belonging to a book.
 
-        Uses jsonb_set to patch specific keys without touching the rest.
+        Updates both the top-level metadata_ JSONB payload and the serialized
+        LlamaIndex node content, which also carries a copy of node metadata.
         Returns the number of rows updated.
         """
         if not updates or not self.collection_exists(collection_name):
@@ -266,23 +293,18 @@ class PgvectorStore:
         conn = self._get_psycopg_conn()
         table = f"data_{collection_name}"
 
-        # Build chained jsonb_set: jsonb_set(jsonb_set(metadata_, ...), ...)
-        expr = "metadata_"
-        params = []
-        for key, value in updates.items():
-            expr = f"jsonb_set({expr}, %s, %s::jsonb)"
-            params.append(f"{{{key}}}")
-            # JSON-encode the value
-            import json
-            params.append(json.dumps(value))
-
-        params.append(str(book_id))
         cur = conn.execute(
-            f"UPDATE {table} SET metadata_ = {expr} "
+            f"SELECT id, metadata_ FROM {table} "
             f"WHERE metadata_->>'book_id' = %s",
-            params,
+            (str(book_id),),
         )
-        return cur.rowcount
+        rows = cur.fetchall()
+        for row_id, metadata in rows:
+            conn.execute(
+                f"UPDATE {table} SET metadata_ = %s WHERE id = %s",
+                (Jsonb(_metadata_with_node_content_updates(dict(metadata or {}), updates)), row_id),
+            )
+        return len(rows)
 
     def requires_lock(self) -> bool:
         """PostgreSQL handles concurrency, no external lock needed."""
