@@ -129,6 +129,21 @@ def test_read_section_span(tmp_path: Path):
     assert all(block["section_title"] == "Timing Bands" for block in result["blocks"])
 
 
+def test_read_span_rejects_malformed_cursor(tmp_path: Path):
+    book_dir = tmp_path / "42"
+    _write_marker_blocks(book_dir)
+    spans.save_structure_artifact(
+        _config(tmp_path), 42, _structure(), "blocks+llm", None, block_count=6,
+    )
+
+    result = spans.read_span(
+        _config(tmp_path), 42, scope="book", cursor="garbage-not-a-cursor",
+    )
+
+    assert result["success"] is False
+    assert "invalid cursor" in result["error"]
+
+
 def test_read_span_requires_structure_artifact(tmp_path: Path):
     assert spans.list_spans(_config(tmp_path), 99) == {
         "success": False,

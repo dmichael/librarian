@@ -102,7 +102,9 @@ def read_span(
     if error:
         return {"success": False, "book_id": book_id, "error": error}
 
-    start_at = _parse_cursor(cursor)
+    start_at, cursor_error = _parse_cursor(cursor)
+    if cursor_error:
+        return {"success": False, "book_id": book_id, "error": cursor_error}
     if start_at is not None:
         selected = [idx for idx in selected if idx >= start_at]
 
@@ -313,14 +315,20 @@ def _all_sections(artifact: dict) -> list[str]:
     return seen
 
 
-def _parse_cursor(cursor: str | None) -> int | None:
+def _parse_cursor(cursor: str | None) -> tuple[int | None, str | None]:
+    """Resolve a continuation cursor to a start index.
+
+    Returns (start_index, error). An absent cursor is (None, None); a malformed
+    cursor is a hard error so a bad value is not silently treated as a restart
+    from the beginning.
+    """
     if not cursor:
-        return None
+        return None, None
     value = cursor.removeprefix("block:")
     try:
-        return int(value)
+        return int(value), None
     except ValueError:
-        return None
+        return None, f"invalid cursor: {cursor!r}"
 
 
 def _int_key_map(value: dict[str, Any]) -> dict[int, int]:
