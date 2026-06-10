@@ -27,6 +27,10 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]  # For Claude classification
 cloud = ["modal>=0.60.0"]  # For cloud GPU extraction
+dev = [
+    "pytest>=9.0.0",
+    "ruff>=0.8.0",
+]
 pgvector = [
     "llama-index-vector-stores-postgres>=0.6.0",
     "psycopg[binary]>=3.1.0",

@@ -83,6 +83,8 @@ config/
 - `suggest_tags` — heuristic subject/library suggestion
 - `verify_book` — post-index QA checks
 - `download_book` — get source download URL
+- `list_book_images` — list extracted document images with metadata and URLs
+- `get_book_image` — get metadata and a download URL for one extracted image
 
 ## CLI commands
 

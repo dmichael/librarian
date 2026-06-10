@@ -49,6 +49,8 @@ long-form artifacts can all be tracked through the same lifecycle.
 | `suggest_tags` | Auto-suggest subjects and library based on content. |
 | `book_status` | Pipeline statistics (counts by status, chunk totals). |
 | `library_profile` | Oriented summary for agent onboarding. |
+| `list_book_images` | List extracted document images with metadata and HTTP URLs. |
+| `get_book_image` | Get metadata and a download URL for one extracted image. |
 
 ## Quick start
 
@@ -272,8 +274,7 @@ config/
 ## Development
 
 ```bash
-pip install -e ".[serve]"
-pip install pytest ruff
+pip install -e ".[serve,dev]"
 
 ruff check src/
 pytest

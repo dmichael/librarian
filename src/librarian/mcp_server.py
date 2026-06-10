@@ -15,7 +15,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from librarian import catalog, pipeline
+from librarian import catalog, images, pipeline
 from librarian.config import load_config
 from librarian.metadata_types import (
     build_search_result_row,
@@ -333,6 +333,32 @@ def download_book(book_id: int) -> dict:
     return catalog.download_info(_get_config(), book_id)
 
 
+@mcp.tool()
+def list_book_images(book_id: int) -> dict:
+    """List images extracted from a book.
+
+    Returns metadata and HTTP URLs for Marker-extracted JPEG/PNG/etc. images.
+    These include figures, diagrams, pictures, and similar visual document
+    regions. Use get_book_image for one image's metadata or fetch the returned
+    URL to download the binary image.
+
+    Args:
+        book_id: ID of the book to inspect
+    """
+    return images.list_book_images(_get_config(), book_id)
+
+
+@mcp.tool()
+def get_book_image(book_id: int, image_id: str) -> dict:
+    """Get metadata and a download URL for one extracted book image.
+
+    Args:
+        book_id: ID of the book
+        image_id: Stable image ID returned by list_book_images
+    """
+    return images.get_book_image(_get_config(), book_id, image_id)
+
+
 # ---------------------------------------------------------------------------
 # QA / tagging tools
 # ---------------------------------------------------------------------------
@@ -482,6 +508,57 @@ async def handle_download(request):
         path=str(source),
         filename=filename,
         media_type="application/octet-stream",
+    )
+
+
+@mcp.custom_route("/books/{book_id}/images", methods=["GET"])
+async def handle_list_book_images(request):
+    """List extracted images for a book.
+
+    GET http://localhost:8811/books/42/images
+    """
+    from starlette.responses import JSONResponse
+
+    book_id_str = request.path_params.get("book_id")
+    try:
+        book_id = int(book_id_str)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"success": False, "error": "Invalid book_id"},
+            status_code=400,
+        )
+
+    return JSONResponse(images.list_book_images(_get_config(), book_id))
+
+
+@mcp.custom_route("/books/{book_id}/images/{image_id}", methods=["GET"])
+async def handle_get_book_image(request):
+    """Download one extracted image for a book.
+
+    GET http://localhost:8811/books/42/images/marker%3A_page_27_Figure_2.jpeg
+    """
+    from starlette.responses import FileResponse, JSONResponse
+
+    book_id_str = request.path_params.get("book_id")
+    try:
+        book_id = int(book_id_str)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"success": False, "error": "Invalid book_id"},
+            status_code=400,
+        )
+
+    image_id = request.path_params.get("image_id") or ""
+    path, error = images.resolve_image_path(_get_config(), book_id, image_id)
+    if error:
+        return JSONResponse({"success": False, "error": error}, status_code=404)
+
+    metadata = images.get_book_image(_get_config(), book_id, image_id)
+    image = metadata.get("image", {})
+    return FileResponse(
+        path=str(path),
+        filename=image.get("filename") or path.name,
+        media_type=image.get("content_type") or "application/octet-stream",
     )
 
 
