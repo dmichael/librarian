@@ -79,6 +79,41 @@ def get_book_image(config: dict, book_id: int, image_id: str) -> dict:
     }
 
 
+def images_for_metadata(
+    config: dict,
+    metadata: dict,
+    *,
+    limit: int = 3,
+    catalog_cache: dict[int, list[dict]] | None = None,
+) -> list[dict]:
+    """Return images related to a retrieved chunk's metadata.
+
+    The indexed vectors keep book_id/page/block_type. They do not keep the
+    original Marker block index, so the stable relation available at retrieval
+    time is same book + same Marker page. This is enough to let agents follow
+    search hits to nearby diagrams/figures without adding a new vector schema.
+    """
+    book_id = metadata.get("book_id")
+    page = metadata.get("page")
+    if not isinstance(book_id, int) or not isinstance(page, int):
+        return []
+
+    if catalog_cache is not None and book_id in catalog_cache:
+        catalog = catalog_cache[book_id]
+    else:
+        result = list_book_images(config, book_id)
+        catalog = result.get("images", []) if result.get("success") else []
+        if catalog_cache is not None:
+            catalog_cache[book_id] = catalog
+
+    candidates = [
+        image for image in catalog
+        if image.get("marker_page") == page or image.get("page") == page
+    ]
+    candidates.sort(key=_related_image_sort_key)
+    return [_compact_image_record(image) for image in candidates[:limit]]
+
+
 def resolve_image_path(
     config: dict, book_id: int, image_id: str
 ) -> tuple[Path | None, str | None]:
@@ -106,6 +141,38 @@ def resolve_image_path(
         return None, f"Unsupported image type: {path.suffix}"
 
     return path, None
+
+
+def _compact_image_record(image: dict) -> dict:
+    """Small image shape suitable for embedding inside search results."""
+    keys = [
+        "image_id",
+        "asset_type",
+        "kind",
+        "source",
+        "url",
+        "content_type",
+        "page",
+        "marker_page",
+        "label",
+        "caption",
+        "block_type",
+        "bbox",
+    ]
+    return {key: image[key] for key in keys if key in image}
+
+
+def _related_image_sort_key(image: dict) -> tuple[int, int, int, str]:
+    has_caption = 0 if image.get("caption") else 1
+    kind_rank = {"figure": 0, "picture": 1, "table": 2, "unknown": 3}
+    page = image.get("page")
+    index = image.get("index")
+    return (
+        has_caption,
+        kind_rank.get(image.get("kind"), 9),
+        page if isinstance(page, int) else 10**9,
+        f"{index if isinstance(index, int) else 10**9}:{image.get('image_id', '')}",
+    )
 
 
 def _book_dir(config: dict, book_id: int) -> Path:

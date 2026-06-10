@@ -41,3 +41,24 @@ def test_image_tools_expose_expected_parameters():
 
     assert list(list_signature.parameters) == ["book_id"]
     assert list(get_signature.parameters) == ["book_id", "image_id"]
+
+
+def test_search_result_rows_include_images_field():
+    from librarian.metadata_types import build_search_result_row
+
+    row = build_search_result_row(
+        text="Figure 2.3 explains LoRA.",
+        score=0.98765,
+        metadata={"book_id": 169, "title": "Domain-Specific Small Language Models"},
+    )
+
+    assert row["images"] == []
+
+    with_image = build_search_result_row(
+        text="Figure 2.3 explains LoRA.",
+        score=0.98765,
+        metadata={"book_id": 169, "title": "Domain-Specific Small Language Models"},
+        images=[{"image_id": "marker:_page_50_Figure_12.jpeg"}],
+    )
+
+    assert with_image["images"] == [{"image_id": "marker:_page_50_Figure_12.jpeg"}]

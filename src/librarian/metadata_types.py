@@ -99,6 +99,7 @@ class SearchResultRow(TypedDict):
     chapter_num: int | None
     chapter_title: str
     block_type: str
+    images: list[dict]
 
 
 class TextSearchResultRow(TypedDict):
@@ -195,6 +196,7 @@ def build_search_result_row(
     text: str,
     score: float,
     metadata: Mapping[str, Any],
+    images: list[dict] | None = None,
 ) -> SearchResultRow:
     """Build semantic-search response row from node metadata."""
     return {
@@ -207,6 +209,7 @@ def build_search_result_row(
         "chapter_num": metadata.get(META_CHAPTER_NUM),
         "chapter_title": metadata.get(META_CHAPTER_TITLE, ""),
         "block_type": metadata.get(META_BLOCK_TYPE, ""),
+        "images": images or [],
     }
 
 

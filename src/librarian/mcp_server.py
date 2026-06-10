@@ -89,8 +89,16 @@ def search(
         book_id=book_id,
     )
 
+    image_catalog_cache: dict[int, list[dict]] = {}
     return [
-        build_search_result_row(text=node.text, score=node.score, metadata=node.metadata)
+        build_search_result_row(
+            text=node.text,
+            score=node.score,
+            metadata=node.metadata,
+            images=images.images_for_metadata(
+                config, node.metadata, catalog_cache=image_catalog_cache
+            ),
+        )
         for node in nodes
     ]
 

@@ -96,3 +96,47 @@ def test_list_book_images_returns_empty_for_unextracted_book(tmp_path: Path):
         "count": 0,
         "images": [],
     }
+
+
+def test_images_for_metadata_links_search_result_by_book_and_marker_page(tmp_path: Path):
+    book_dir = tmp_path / "42"
+    marker_dir = book_dir / "raw" / "marker"
+    image_dir = marker_dir / "images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "_page_27_Figure_2.jpeg").write_bytes(b"jpeg")
+    (image_dir / "_page_28_Figure_5.jpeg").write_bytes(b"other")
+
+    (marker_dir / "document.json").write_text(json.dumps({
+        "blocks": [
+            {
+                "block_type": "FigureGroup",
+                "html": (
+                    "<p><img src='/page/27/Figure/2'></p>"
+                    "<p>Figure 1.1 Some examples of generated content</p>"
+                ),
+                "page": 27,
+                "bbox": [1, 2, 3, 4],
+                "images": {"/page/27/Figure/2": "..."},
+            },
+            {
+                "block_type": "FigureGroup",
+                "html": (
+                    "<p><img src='/page/28/Figure/5'></p>"
+                    "<p>Figure 1.2 Another figure</p>"
+                ),
+                "page": 28,
+                "images": {"/page/28/Figure/5": "..."},
+            },
+        ]
+    }))
+
+    linked = images.images_for_metadata(
+        _config(tmp_path),
+        {"book_id": 42, "page": 27, "block_type": "Text"},
+    )
+
+    assert len(linked) == 1
+    assert linked[0]["image_id"] == "marker:_page_27_Figure_2.jpeg"
+    assert linked[0]["caption"] == "Figure 1.1 Some examples of generated content"
+    assert linked[0]["url"].endswith("/books/42/images/marker%3A_page_27_Figure_2.jpeg")
+    assert "size_bytes" not in linked[0]
