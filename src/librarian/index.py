@@ -75,6 +75,7 @@ from librarian.structure import (
     get_context_for_page,
     get_hierarchy_for_block,
 )
+from librarian.structure_audit import audit_structure_with_llm
 
 
 def extract_page_number(text: str) -> int | None:
@@ -639,10 +640,17 @@ def index_book(
     if blocks:
         structure = extract_structure_from_blocks(blocks, title=book_title)
         structure_source = "blocks"
+        audit = audit_structure_with_llm(structure, blocks, book_title, config)
+        structure = audit.structure
+        if audit.applied:
+            structure_source = "blocks+llm"
+            print(f"  Structure audit: {audit.reason}")
+        else:
+            print(f"  Structure audit: no change ({audit.reason})")
     else:
         structure = parse_structure(raw_content, title=book_title)
         structure_source = "markdown"
-        print(f"  [FALLBACK] Using markdown for structure (no JSON blocks)", file=sys.stderr)
+        print("  [FALLBACK] Using markdown for structure (no JSON blocks)", file=sys.stderr)
 
     # Validate structure and warn if issues
     total_pages = max((b.get('page') or 0) for b in blocks) if blocks else None
@@ -766,7 +774,5 @@ def index_book(
             progress_fn(done, total, f"Embedded {done}/{total} chunks")
 
     return total, eq_count, ch_count
-
-
 
 

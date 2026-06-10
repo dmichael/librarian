@@ -84,6 +84,7 @@ def verify_book(config: dict, book_id: int) -> dict:
         parse_structure,
         validate_structure,
     )
+    from librarian.structure_audit import audit_structure_with_llm
     from librarian.vectorstore import get_collection_names, get_vector_store
 
     results = {}
@@ -176,9 +177,11 @@ def verify_book(config: dict, book_id: int) -> dict:
     # ── 4. Structure / Chapters ─────────────────────────────────
     if blocks:
         structure = extract_structure_from_blocks(blocks, title=book_title or "")
+        audit = audit_structure_with_llm(structure, blocks, book_title or "", config)
+        structure = audit.structure
         pages = [b.get("page") for b in blocks if b.get("page")]
         total_pages = (max(pages) - min(pages) + 1) if pages else None
-        structure_source = "blocks"
+        structure_source = "blocks+llm" if audit.applied else "blocks"
     else:
         structure = parse_structure(raw_content, title=book_title or "")
         total_pages = None
