@@ -399,12 +399,16 @@ def _build_chapter_summary_nodes(
     content: str,
     metadata: dict,
     config: dict,
+    blocks: list[dict] | None = None,
 ) -> list[TextNode]:
     """One summary node per detected chapter (level=chapter)."""
     nodes = []
+    chapter_texts = _chapter_texts_from_blocks(structure, blocks) if blocks else {}
     for chapter in structure.chapters:
         # Extract chapter text and generate summary
-        chapter_text = extract_chapter_text(content, chapter.number, structure)
+        chapter_text = chapter_texts.get(chapter.number)
+        if not chapter_text:
+            chapter_text = extract_chapter_text(content, chapter.number, structure)
         if not chapter_text:
             continue
 
@@ -441,6 +445,24 @@ def _build_chapter_summary_nodes(
         )
         nodes.append(node)
     return nodes
+
+
+def _chapter_texts_from_blocks(
+    structure: DocumentStructure,
+    blocks: list[dict] | None,
+) -> dict[int, str]:
+    """Concatenate block text by audited chapter assignment."""
+    if not blocks:
+        return {}
+    grouped: dict[int, list[str]] = {}
+    for idx, block in enumerate(blocks):
+        chapter_num = structure.block_to_chapter.get(idx)
+        if chapter_num is None:
+            continue
+        text = block.get("text", "")
+        if text:
+            grouped.setdefault(chapter_num, []).append(text)
+    return {num: "\n\n".join(parts) for num, parts in grouped.items()}
 
 
 def _section_texts(
@@ -534,7 +556,9 @@ def build_summary_nodes(
         ))
 
     if structure.chapters:
-        nodes.extend(_build_chapter_summary_nodes(structure, content, metadata, config))
+        nodes.extend(_build_chapter_summary_nodes(
+            structure, content, metadata, config, blocks=blocks,
+        ))
     elif blocks and structure.block_to_section:
         nodes.extend(_build_section_summary_nodes(structure, blocks, metadata, config))
 
@@ -774,5 +798,4 @@ def index_book(
             progress_fn(done, total, f"Embedded {done}/{total} chunks")
 
     return total, eq_count, ch_count
-
 

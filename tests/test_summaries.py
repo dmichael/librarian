@@ -7,7 +7,12 @@ pytest.importorskip("llama_index")
 import librarian.index as index_mod
 import librarian.llm as llm
 from librarian.metadata_types import META_LEVEL, META_SECTION_TITLE
-from librarian.structure import extract_structure_from_blocks, parse_structure
+from librarian.structure import (
+    Chapter,
+    DocumentStructure,
+    extract_structure_from_blocks,
+    parse_structure,
+)
 
 
 @pytest.fixture
@@ -67,6 +72,31 @@ def test_chaptered_book_gets_book_and_chapter_summaries(stub_llm):
     assert len(structure.chapters) == 2
 
     nodes = index_mod.build_summary_nodes(structure, content, METADATA, {})
+
+    levels = [n.metadata[META_LEVEL] for n in nodes]
+    assert levels.count("book") == 1
+    assert levels.count("chapter") == 2
+    chapter_nums = {n.metadata["chapter_num"] for n in nodes if n.metadata[META_LEVEL] == "chapter"}
+    assert chapter_nums == {1, 2}
+
+
+def test_chapter_summaries_can_use_block_assignments(stub_llm):
+    blocks = [
+        _header(0, "Chapter One FOCUS ON CYCLES", page=5),
+        _text_block("cycle analysis " * 120, page=5),
+        _header(2, "Chapter Two", page=20),
+        _text_block("technical tools " * 120, page=20),
+    ]
+    structure = DocumentStructure(title="Cycles Book")
+    structure.chapters = [
+        Chapter(number=1, title="Focus on Cycles", page_start=5),
+        Chapter(number=2, title="Technical Tools", page_start=20),
+    ]
+    structure.block_to_chapter = {0: 1, 1: 1, 2: 2, 3: 2}
+
+    nodes = index_mod.build_summary_nodes(
+        structure, "markdown without numeric chapter headings", METADATA, {}, blocks=blocks,
+    )
 
     levels = [n.metadata[META_LEVEL] for n in nodes]
     assert levels.count("book") == 1
