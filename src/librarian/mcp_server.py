@@ -15,7 +15,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from librarian import catalog, images, pipeline
+from librarian import catalog, images, pipeline, spans
 from librarian.config import load_config
 from librarian.metadata_types import (
     build_search_result_row,
@@ -365,6 +365,55 @@ def get_book_image(book_id: int, image_id: str) -> dict:
         image_id: Stable image ID returned by list_book_images
     """
     return images.get_book_image(_get_config(), book_id, image_id)
+
+
+@mcp.tool()
+def list_spans(book_id: int) -> dict:
+    """List readable book/chapter/section spans for an indexed book.
+
+    Reads the persisted structure artifact from indexing. If the artifact is
+    missing, reindex the book; this tool does not run live structure inference.
+
+    Args:
+        book_id: ID of the book to inspect
+    """
+    return spans.list_spans(_get_config(), book_id)
+
+
+@mcp.tool()
+def read_span(
+    book_id: int,
+    scope: str,
+    chapter: int | None = None,
+    section: str | None = None,
+    cursor: str | None = None,
+    max_chars: int = spans.DEFAULT_MAX_CHARS,
+    include_images: bool = False,
+) -> dict:
+    """Read ordered source text for a book, chapter, or section.
+
+    Requires the structure artifact written during indexing. Returns capped
+    source blocks plus a next_cursor when more text is available.
+
+    Args:
+        book_id: ID of the book
+        scope: One of book, chapter, or section
+        chapter: Chapter number for chapter scope, or optional section disambiguator
+        section: Section title for section scope
+        cursor: Continuation cursor returned by a previous read_span call
+        max_chars: Soft response text budget, capped server-side
+        include_images: Include image metadata/URLs for pages in the returned slice
+    """
+    return spans.read_span(
+        _get_config(),
+        book_id,
+        scope,
+        chapter=chapter,
+        section=section,
+        cursor=cursor,
+        max_chars=max_chars,
+        include_images=include_images,
+    )
 
 
 # ---------------------------------------------------------------------------

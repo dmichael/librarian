@@ -59,7 +59,7 @@ from librarian.metadata_types import (
     serialize_list_metadata as contract_serialize_list_metadata,
     with_block_metadata,
 )
-from librarian.files import marker_content_json, marker_markdown
+from librarian.files import load_extracted_blocks, marker_content_json, marker_markdown
 from librarian.equations import (
     ExtractedEquation,
     extract_equations,
@@ -76,6 +76,7 @@ from librarian.structure import (
     get_hierarchy_for_block,
 )
 from librarian.structure_audit import audit_structure_with_llm
+from librarian.spans import save_structure_artifact
 
 
 def extract_page_number(text: str) -> int | None:
@@ -104,58 +105,6 @@ def load_extracted_book(book_dir: Path) -> tuple[str | None, str | None]:
     raw_content = md_file.read_text()
     augmented_content = augment_latex_equations(raw_content)
     return augmented_content, raw_content
-
-
-def load_extracted_blocks(book_dir: Path) -> list[dict] | None:
-    """Load structured blocks from marker JSON output.
-
-    Returns list of blocks with text and metadata, or None if not available.
-    Each block contains:
-        - text: Plain text content (converted from HTML)
-        - html: Original block HTML (kept so equation extraction can recover
-          clean LaTeX from <math> markup; marker leaves text empty for equations)
-        - page: Page number
-        - block_type: SectionHeader, Text, Table, etc.
-        - block_id: Unique identifier
-    """
-    import markdownify
-
-    content_file = marker_content_json(book_dir)
-    if not content_file:
-        return None
-
-    with open(content_file) as f:
-        data = json.load(f)
-
-    # Handle both "blocks" and "chunks" keys
-    raw_blocks = data.get("blocks", data.get("chunks", []))
-    if not raw_blocks:
-        return None
-
-    blocks = []
-    for block in raw_blocks:
-        if not isinstance(block, dict):
-            continue
-
-        # Convert HTML to markdown/text
-        html = block.get("html", "")
-        if html:
-            text = markdownify.markdownify(html, heading_style="ATX").strip()
-        else:
-            text = block.get("text", "")
-
-        if not text:
-            continue
-
-        blocks.append({
-            "text": text,
-            "html": html,
-            "page": block.get("page"),
-            "block_type": block.get("block_type", "Text"),
-            "block_id": block.get("id", ""),
-        })
-
-    return blocks if blocks else None
 
 
 def serialize_list_metadata(value) -> str:
@@ -684,6 +633,15 @@ def index_book(
             print(f"  [WARNING] Structure: {warning}", file=sys.stderr)
     if validation["chapter_count"] > 0:
         print(f"  Structure ({structure_source}): {validation['chapter_count']} chapters detected")
+    if blocks:
+        save_structure_artifact(
+            config,
+            book_id,
+            structure,
+            source=structure_source,
+            audit={"applied": audit.applied, "reason": audit.reason},
+            block_count=len(blocks),
+        )
 
     # Extract equations - prefer JSON blocks (has proper equation markup)
     if blocks:
@@ -798,4 +756,3 @@ def index_book(
             progress_fn(done, total, f"Embedded {done}/{total} chunks")
 
     return total, eq_count, ch_count
-

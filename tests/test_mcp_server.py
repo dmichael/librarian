@@ -3,7 +3,13 @@
 import inspect
 
 from librarian.catalog import build_vector_metadata_updates
-from librarian.mcp_server import get_book_image, list_book_images, search
+from librarian.mcp_server import (
+    get_book_image,
+    list_book_images,
+    list_spans,
+    read_span,
+    search,
+)
 
 
 def test_book_vector_metadata_updates_includes_display_and_filter_fields():
@@ -41,6 +47,25 @@ def test_image_tools_expose_expected_parameters():
 
     assert list(list_signature.parameters) == ["book_id"]
     assert list(get_signature.parameters) == ["book_id", "image_id"]
+
+
+def test_span_tools_expose_expected_parameters():
+    list_signature = inspect.signature(list_spans)
+    read_signature = inspect.signature(read_span)
+
+    assert list(list_signature.parameters) == ["book_id"]
+    assert list(read_signature.parameters) == [
+        "book_id",
+        "scope",
+        "chapter",
+        "section",
+        "cursor",
+        "max_chars",
+        "include_images",
+    ]
+    assert read_signature.parameters["chapter"].default is None
+    assert read_signature.parameters["section"].default is None
+    assert read_signature.parameters["cursor"].default is None
 
 
 def test_search_result_rows_include_images_field():
