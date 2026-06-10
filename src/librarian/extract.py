@@ -111,7 +111,7 @@ def extract_pdf(
     Extractors are independent — each is attempted regardless of whether
     others succeed. Returns (errors, merged_metadata).
     """
-    from librarian.extractors import grobid, marker
+    from librarian.extractors import grobid, marker, pdftotext
 
     errors: list[str] = []
     meta_parts: list[DocumentMetadata] = []
@@ -130,6 +130,17 @@ def extract_pdf(
             "extraction not configured: set LIBRARIAN_SPARK_URL (Marker) and/or "
             "GROBID_BASE_URL (GROBID) before extracting PDFs"
         )
+
+    try:
+        print("  Extracting layout text via pdftotext...", flush=True)
+        pdftotext.extract(source, output_dir)
+        meta_parts.append(DocumentMetadata(
+            format="pdf",
+            extractors_run=["pdftotext"],
+        ))
+    except Exception as e:
+        print(f"  PDFTOTEXT FAILED: {e}", file=sys.stderr, flush=True)
+        errors.append(f"pdftotext: {e}")
 
     if spark_url:
         decision = route_pdf(source)
@@ -186,7 +197,5 @@ def extract_pdf(
 
     meta = merge_metadata(*meta_parts) if meta_parts else DocumentMetadata(format="pdf")
     return errors, meta
-
-
 
 

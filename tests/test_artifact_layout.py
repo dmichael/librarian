@@ -1,13 +1,19 @@
 import json
 from pathlib import Path
 
-from librarian.extractors import marker
+import subprocess
+
+from librarian.extractors import marker, pdftotext
 from librarian.files import (
     marker_content_json,
     marker_html,
     marker_markdown,
     marker_meta_json,
     marker_dir,
+    pdftotext_document,
+    pdftotext_meta_json,
+    pdftotext_pages_json,
+    pdftotext_dir,
 )
 
 
@@ -39,6 +45,56 @@ def test_root_marker_artifacts_are_not_canonical(tmp_path: Path):
     assert marker_content_json(book_dir) is None
     assert marker_markdown(book_dir) is None
     assert marker_meta_json(book_dir) is None
+
+
+def test_pdftotext_artifact_discovery_uses_raw_pdftotext_dir(tmp_path: Path):
+    book_dir = tmp_path / "2"
+    raw_text = book_dir / "raw" / "pdftotext"
+    raw_text.mkdir(parents=True)
+
+    (raw_text / "document.txt").write_text("full text")
+    (raw_text / "pages.json").write_text("[]")
+    (raw_text / "metadata.json").write_text("{}")
+
+    assert pdftotext_dir(book_dir) == raw_text
+    assert pdftotext_document(book_dir) == raw_text / "document.txt"
+    assert pdftotext_pages_json(book_dir) == raw_text / "pages.json"
+    assert pdftotext_meta_json(book_dir) == raw_text / "metadata.json"
+
+
+def test_pdftotext_extraction_writes_layout_artifacts(tmp_path: Path, monkeypatch):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF")
+    book_dir = tmp_path / "2"
+    stale_dir = pdftotext_dir(book_dir)
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "stale.txt").write_text("old")
+
+    def fake_run(command, check, capture_output, text, encoding, errors, timeout):
+        assert command[:4] == ["pdftotext", "-layout", "-enc", "UTF-8"]
+        assert command[-1] == "-"
+        assert encoding == "utf-8"
+        assert errors == "replace"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="page one\n\fpage two\n\f",
+            stderr="",
+        )
+
+    monkeypatch.setattr("librarian.extractors.pdftotext.subprocess.run", fake_run)
+
+    result = pdftotext.extract(source, book_dir)
+
+    raw_text = pdftotext_dir(book_dir)
+    assert result == {"page_count": 2}
+    assert (raw_text / "document.txt").read_text() == "page one\n\fpage two\n\f"
+    assert json.loads((raw_text / "pages.json").read_text()) == [
+        {"page": 1, "text": "page one"},
+        {"page": 2, "text": "page two"},
+    ]
+    assert json.loads((raw_text / "metadata.json").read_text())["tool"] == "pdftotext"
+    assert not (raw_text / "stale.txt").exists()
 
 
 def test_spark_extraction_writes_marker_artifacts_under_raw_marker(tmp_path: Path, monkeypatch):

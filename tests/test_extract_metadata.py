@@ -29,6 +29,10 @@ def _run(tmp_path: Path, monkeypatch, *, with_refs: bool):
         "librarian.extractors.grobid.extract_fulltext",
         lambda *a, **k: _fake_result(with_refs=with_refs),
     )
+    monkeypatch.setattr(
+        "librarian.extractors.pdftotext.extract",
+        lambda *a, **k: {"page_count": 1},
+    )
 
     errors, meta = extract_mod.extract_pdf(pdf, tmp_path)
     return meta
@@ -79,6 +83,10 @@ def test_extraction_backend_recorded(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "librarian.extractors.marker.extract", lambda *a, **k: {"page_count": 400}
     )
+    monkeypatch.setattr(
+        "librarian.extractors.pdftotext.extract",
+        lambda *a, **k: {"page_count": 400},
+    )
 
     # Spark configured (marker runs), no GROBID.
     config = {"extractors": {"spark_url": "http://spark.test:8001"}}
@@ -86,3 +94,4 @@ def test_extraction_backend_recorded(tmp_path: Path, monkeypatch):
 
     assert errors == []
     assert meta.extraction_backend == "modal"
+    assert meta.extractors_run == ["pdftotext", "marker"]

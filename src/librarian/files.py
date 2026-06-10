@@ -5,6 +5,7 @@ import json
 
 
 MARKER_DIR = Path("raw") / "marker"
+PDFTOTEXT_DIR = Path("raw") / "pdftotext"
 
 
 def marker_dir(book_dir: Path) -> Path:
@@ -33,6 +34,29 @@ def marker_markdown(book_dir: Path) -> Path | None:
 def marker_html(book_dir: Path) -> Path | None:
     """Return the marker-rendered HTML path for a book, if present."""
     path = marker_dir(book_dir) / "document.html"
+    return path if path.exists() else None
+
+
+def pdftotext_dir(book_dir: Path) -> Path:
+    """Return the canonical raw pdftotext artifact directory for a book."""
+    return book_dir / PDFTOTEXT_DIR
+
+
+def pdftotext_document(book_dir: Path) -> Path | None:
+    """Return the pdftotext full-document text path for a book, if present."""
+    path = pdftotext_dir(book_dir) / "document.txt"
+    return path if path.exists() else None
+
+
+def pdftotext_pages_json(book_dir: Path) -> Path | None:
+    """Return the pdftotext per-page JSON path for a book, if present."""
+    path = pdftotext_dir(book_dir) / "pages.json"
+    return path if path.exists() else None
+
+
+def pdftotext_meta_json(book_dir: Path) -> Path | None:
+    """Return the pdftotext metadata JSON path for a book, if present."""
+    path = pdftotext_dir(book_dir) / "metadata.json"
     return path if path.exists() else None
 
 
