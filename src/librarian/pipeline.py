@@ -280,7 +280,7 @@ def index_worker(book_id: int, config: dict):
 
         update_book_status(
             book_id, "indexed",
-            f"Indexed {chunks} chunks, {eq_count} equations, {ch_count} chapters",
+            f"Indexed {chunks} chunks, {eq_count} equations, {ch_count} summaries",
             config,
         )
     except Exception as e:

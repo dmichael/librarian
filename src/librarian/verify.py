@@ -424,27 +424,48 @@ def verify_book(config: dict, book_id: int) -> dict:
         "latex_in_content": latex_in_content,
     }, eq_issues)
 
-    # ── 9. Chapter Summaries ────────────────────────────────────
-    ch_indexed = len(store.get_documents_by_filter(
+    # ── 9. Summaries (book / chapter / section hierarchy) ───────
+    summary_rows = store.get_documents_by_filter(
         collections["chapters"], {"book_id": book_id}
-    ))
+    )
+    by_level = Counter(
+        # Pre-hierarchy indexes have no level field; those nodes are chapters.
+        meta.get("level") or "chapter"
+        for _text, meta in summary_rows
+    )
+    book_summaries = by_level.get("book", 0)
+    chapter_summaries = by_level.get("chapter", 0)
+    section_summaries = by_level.get("section", 0)
 
-    ch_issues = []
-    if ch_count > 0 and ch_indexed == 0:
-        ch_issues.append(f"Structure has {ch_count} chapters but none are indexed with summaries")
-    elif ch_count > 0 and ch_indexed < ch_count:
-        ch_issues.append(f"Only {ch_indexed}/{ch_count} chapters have summaries")
+    sum_issues = []
+    if book_summaries == 0:
+        sum_issues.append(
+            "No book-level summary (indexed before the summary hierarchy — re-index to add)"
+        )
+    if ch_count > 0 and chapter_summaries == 0:
+        sum_issues.append(
+            f"Structure has {ch_count} chapters but none are indexed with summaries"
+        )
+    elif ch_count > 0 and chapter_summaries < ch_count:
+        sum_issues.append(f"Only {chapter_summaries}/{ch_count} chapters have summaries")
+    elif ch_count == 0 and section_count > 0 and section_summaries == 0 and book_summaries == 0:
+        sum_issues.append(
+            f"{section_count} sections detected but no summaries at any level"
+        )
 
-    ch_status = "green"
-    if ch_count > 0 and ch_indexed == 0:
-        ch_status = "red"
-    elif ch_issues:
-        ch_status = "yellow"
+    sum_status = "green"
+    if ch_count > 0 and chapter_summaries == 0:
+        sum_status = "red"
+    elif sum_issues:
+        sum_status = "yellow"
 
-    results["chapter_summaries"] = _assess(ch_status, {
+    results["summaries"] = _assess(sum_status, {
         "detected_chapters": ch_count,
-        "indexed_summaries": ch_indexed,
-    }, ch_issues)
+        "detected_sections": section_count,
+        "book_summaries": book_summaries,
+        "chapter_summaries": chapter_summaries,
+        "section_summaries": section_summaries,
+    }, sum_issues)
 
     # ── Overall ─────────────────────────────────────────────────
     statuses = [r["status"] for r in results.values()]

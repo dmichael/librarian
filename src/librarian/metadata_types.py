@@ -24,6 +24,7 @@ META_SECTION_TITLES: Final[str] = "section_titles"
 META_BREADCRUMB: Final[str] = "breadcrumb"
 META_START_PAGE: Final[str] = "start_page"
 META_RESULT_TYPE: Final[str] = "_result_type"
+META_LEVEL: Final[str] = "level"  # summary granularity: book | chapter | section
 
 # Raw source metadata field used by calibre/mcp payloads.
 SOURCE_LIBRARY_FIELD: Final[str] = "*library"
@@ -67,17 +68,23 @@ class BlockNodeMetadata(BaseNodeMetadata):
 
 
 class ChapterNodeMetadata(TypedDict):
-    """Chapter-summary metadata stored in chapter collection."""
+    """Summary-node metadata stored in the chapters collection.
+
+    level distinguishes summary granularity: "book" (whole-book overview),
+    "chapter", or "section" (books organized in sections without chapters).
+    chapter_num is None for book- and section-level nodes.
+    """
 
     book_id: int
     title: str
-    chapter_num: int
+    chapter_num: int | None
     chapter_title: str
     summary: str
     page_range: str
     section_titles: str
     subjects: str
     library: str
+    level: str
 
 
 class SearchResultRow(TypedDict):
@@ -161,13 +168,14 @@ def with_block_metadata(
 def build_chapter_node_metadata(
     *,
     metadata: Mapping[str, Any],
-    chapter_num: int,
+    chapter_num: int | None,
     chapter_title: str,
     summary: str,
     page_range: str,
     section_titles: list[str],
+    level: str = "chapter",
 ) -> ChapterNodeMetadata:
-    """Build metadata for chapter-level summary nodes."""
+    """Build metadata for summary nodes (book/chapter/section level)."""
     return {
         META_BOOK_ID: metadata.get("id", 0),
         META_TITLE: metadata.get("title", "Unknown"),
@@ -178,6 +186,7 @@ def build_chapter_node_metadata(
         "section_titles": serialize_list_metadata(section_titles),
         META_SUBJECTS: serialize_list_metadata(metadata.get("subjects", [])),
         META_LIBRARY: metadata.get(SOURCE_LIBRARY_FIELD, "") or "",
+        META_LEVEL: level,
     }
 
 

@@ -284,21 +284,23 @@ def create_nodes_from_blocks(
     return nodes
 
 
-def generate_chapter_summary(chapter_text: str, chapter_title: str, config: dict) -> str:
-    """Generate a summary for a chapter using the configured LLM.
+def generate_chapter_summary(
+    chapter_text: str, chapter_title: str, config: dict, unit: str = "chapter",
+) -> str:
+    """Generate a summary for a chapter or section using the configured LLM.
 
     Uses the same LLM provider configured for classification.
     """
     from librarian.llm import complete
 
-    # Truncate chapter text if too long (keep first ~4000 chars for summary)
+    # Truncate text if too long (keep first ~4000 chars for summary)
     max_chars = 4000
     if len(chapter_text) > max_chars:
         chapter_text = chapter_text[:max_chars] + "..."
 
-    prompt = f"""Summarize the following chapter in 2-3 sentences. Focus on the main topics and key concepts covered.
+    prompt = f"""Summarize the following {unit} in 2-3 sentences. Focus on the main topics and key concepts covered.
 
-Chapter: {chapter_title}
+{unit.capitalize()}: {chapter_title}
 
 Content:
 {chapter_text}
@@ -306,6 +308,37 @@ Content:
 Summary:"""
 
     return complete(prompt, config, max_tokens=256, timeout=60.0).strip()
+
+
+def _sample_text(content: str, sample_size: int = 5000) -> str:
+    """Begin/middle/end sample of a document (for whole-book summarization)."""
+    if len(content) <= sample_size:
+        return content
+    chunk = sample_size // 3
+    middle_start = (len(content) - chunk) // 2
+    return (
+        f"{content[:chunk]}\n\n[...]\n\n"
+        f"{content[middle_start:middle_start + chunk]}\n\n[...]\n\n"
+        f"{content[-chunk:]}"
+    )
+
+
+def generate_book_summary(content: str, title: str, config: dict) -> str:
+    """Generate a whole-book summary from a content sample."""
+    from librarian.llm import complete
+
+    prompt = f"""Summarize this book in 3-5 sentences: what it is about, what it covers, and who/what it is useful for. Base the summary only on the sample below.
+
+Book title: {title}
+
+Content sample (beginning / middle / end):
+---
+{_sample_text(content)}
+---
+
+Summary:"""
+
+    return complete(prompt, config, max_tokens=350, timeout=60.0).strip()
 
 
 def extract_chapter_text(content: str, chapter_num: int, structure: DocumentStructure) -> str:
@@ -355,22 +388,18 @@ def extract_chapter_text(content: str, chapter_num: int, structure: DocumentStru
     return content[start_pos:]
 
 
-def index_chapters(
+# Section-summary guardrails: skip fragments, and cap LLM calls per book.
+MIN_SECTION_SUMMARY_CHARS = 1500
+MAX_SECTION_SUMMARIES = 40
+
+
+def _build_chapter_summary_nodes(
     structure: DocumentStructure,
     content: str,
     metadata: dict,
-    chapter_store: QdrantVectorStore,
     config: dict,
-) -> int:
-    """Index chapter summaries to the chapter collection.
-
-    Creates one document per chapter with:
-    - LLM-generated summary as searchable text
-    - Chapter metadata (number, title, page range, section titles)
-    """
-    if not structure.chapters:
-        return 0
-
+) -> list[TextNode]:
+    """One summary node per detected chapter (level=chapter)."""
     nodes = []
     for chapter in structure.chapters:
         # Extract chapter text and generate summary
@@ -410,18 +439,126 @@ def index_chapters(
             ),
         )
         nodes.append(node)
+    return nodes
 
+
+def _section_texts(
+    structure: DocumentStructure, blocks: list[dict],
+) -> list[tuple[str, str]]:
+    """Ordered (section_title, concatenated_text) pairs from the block map."""
+    grouped: dict[str, list[str]] = {}
+    for idx, block in enumerate(blocks):
+        title = structure.block_to_section.get(idx)
+        if not title:
+            continue
+        text = block.get("text", "")
+        if text:
+            grouped.setdefault(title, []).append(text)
+    return [(title, "\n\n".join(parts)) for title, parts in grouped.items()]
+
+
+def _build_section_summary_nodes(
+    structure: DocumentStructure,
+    blocks: list[dict],
+    metadata: dict,
+    config: dict,
+) -> list[TextNode]:
+    """One summary node per substantial section (level=section).
+
+    Used when a book has sections but no chapters (articles, manuals,
+    web captures). Tiny sections are skipped and the per-book LLM call
+    count is capped.
+    """
+    candidates = [
+        (title, text)
+        for title, text in _section_texts(structure, blocks)
+        if len(text) >= MIN_SECTION_SUMMARY_CHARS
+    ]
+    if len(candidates) > MAX_SECTION_SUMMARIES:
+        print(
+            f"  [summaries] capping section summaries at {MAX_SECTION_SUMMARIES} "
+            f"(book has {len(candidates)} substantial sections)",
+            file=sys.stderr,
+        )
+        candidates = candidates[:MAX_SECTION_SUMMARIES]
+
+    nodes = []
+    for title, text in candidates:
+        summary = generate_chapter_summary(text, title, config, unit="section")
+        if not summary:
+            continue
+        node_meta = build_chapter_node_metadata(
+            metadata=metadata,
+            chapter_num=None,
+            chapter_title=title,
+            summary=summary,
+            page_range="",
+            section_titles=[],
+            level="section",
+        )
+        node_meta[META_SECTION_TITLE] = title
+        nodes.append(TextNode(text=summary, metadata=node_meta))
+    return nodes
+
+
+def build_summary_nodes(
+    structure: DocumentStructure,
+    content: str,
+    metadata: dict,
+    config: dict,
+    blocks: list[dict] | None = None,
+) -> list[TextNode]:
+    """Build the summary hierarchy for a book.
+
+    - book-level summary: always (one LLM call over a content sample)
+    - chapter summaries: when chapters were detected
+    - section summaries: fallback when the book has sections but no chapters
+    """
+    nodes: list[TextNode] = []
+
+    book_title = metadata.get("title", "Unknown")
+    book_summary = generate_book_summary(content, book_title, config)
+    if book_summary:
+        nodes.append(TextNode(
+            text=book_summary,
+            metadata=build_chapter_node_metadata(
+                metadata=metadata,
+                chapter_num=None,
+                chapter_title="",
+                summary=book_summary,
+                page_range="",
+                section_titles=[],
+                level="book",
+            ),
+        ))
+
+    if structure.chapters:
+        nodes.extend(_build_chapter_summary_nodes(structure, content, metadata, config))
+    elif blocks and structure.block_to_section:
+        nodes.extend(_build_section_summary_nodes(structure, blocks, metadata, config))
+
+    return nodes
+
+
+def index_summaries(
+    structure: DocumentStructure,
+    content: str,
+    metadata: dict,
+    chapter_store: QdrantVectorStore,
+    config: dict,
+    blocks: list[dict] | None = None,
+) -> int:
+    """Index the summary hierarchy (book/chapter/section) to the chapters collection."""
+    nodes = build_summary_nodes(structure, content, metadata, config, blocks=blocks)
     if not nodes:
         return 0
 
-    # Index to chapter store
     storage_context = StorageContext.from_defaults(vector_store=chapter_store)
     VectorStoreIndex(
         nodes=nodes,
         storage_context=storage_context,
         show_progress=False,
     )
-
     return len(nodes)
 
 
@@ -476,7 +613,7 @@ def index_book(
     blocks: list[dict] | None = None,
     progress_fn: callable = None,
 ) -> tuple[int, int, int]:
-    """Index a single book and return (text_chunks, equation_count, chapter_count).
+    """Index a single book and return (text_chunks, equation_count, summary_count).
 
     Args:
         book_id: Book ID
@@ -485,13 +622,14 @@ def index_book(
         metadata: Book metadata dict
         vector_store: Main text chunk store
         equation_store: Separate equation store (or None to skip)
-        chapter_store: Chapter summary store (or None to skip)
+        chapter_store: Summary store (or None to skip). Receives the summary
+            hierarchy: book-level always, plus chapter or section summaries.
         config: Application config
         blocks: Optional JSON blocks from marker (preferred for page metadata)
         progress_fn: Optional callback(done, total, message) for progress reporting
 
     Returns:
-        Tuple of (text_chunk_count, equation_count, chapter_count)
+        Tuple of (text_chunk_count, equation_count, summary_count)
     """
     book_title = metadata.get("title", "Unknown")
 
@@ -530,10 +668,12 @@ def index_book(
 
         eq_count = index_equations(equations, metadata, equation_store)
 
-    # Index chapter summaries
+    # Index the summary hierarchy (book always; chapters or sections as available)
     ch_count = 0
-    if chapter_store and structure.chapters:
-        ch_count = index_chapters(structure, raw_content, metadata, chapter_store, config)
+    if chapter_store:
+        ch_count = index_summaries(
+            structure, raw_content, metadata, chapter_store, config, blocks=blocks,
+        )
 
     # Set up chunking config
     chunk_config = config.get("chunking", {})
