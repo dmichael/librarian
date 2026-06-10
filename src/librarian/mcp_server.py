@@ -360,57 +360,22 @@ def verify_book(book_id: int) -> dict:
 
 @mcp.tool()
 def suggest_tags(book_id: int) -> dict:
-    """Suggest subjects and library for a book based on its content.
+    """Suggest subjects and library for a book using the configured LLM.
 
-    Reads the title, authors, and first ~2000 tokens of extracted text, then
-    matches against the existing taxonomy using keyword heuristics. Returns
-    suggestions that can be applied via update_book.
+    Reads the title, authors, and a content sample, plus the library's existing
+    taxonomy, and asks the LLM for slash-format subjects and a library. The
+    existing taxonomy guides naming/dedup but is not a closed list — the LLM
+    proposes well-formed new tags when a book introduces new topics, so tagging
+    grows the library rather than only matching what's already there. Falls back
+    to keyword heuristics if the LLM is unreachable. Apply with update_book.
 
     Args:
         book_id: ID of the book to analyze
     """
-    from librarian.classify import suggest_tags_for_text
-    from librarian.config import expand_path
-    from librarian.db import Book, session_scope
-    from librarian.files import marker_markdown
+    from librarian.classify import suggest_tags_for_book
 
-    config = _get_config()
     try:
-        with session_scope(config) as session:
-            book = session.query(Book).filter(Book.id == book_id).first()
-            if not book:
-                return {"success": False, "error": f"Book {book_id} not found"}
-
-            # Build text sample from title + authors + extracted content
-            parts = [book.title or ""]
-            if book.authors:
-                parts.extend(book.authors)
-
-            # Read first ~2000 tokens from extracted markdown
-            output_path = expand_path(config["output_path"])
-            md_file = marker_markdown(output_path / str(book_id))
-            if md_file and md_file.exists():
-                parts.append(md_file.read_text(errors="replace")[:8000])
-
-            suggested_subjects, suggested_library = suggest_tags_for_text(" ".join(parts))
-
-            # Get existing taxonomy for context
-            all_subjects = set()
-            for b in session.query(Book).all():
-                if b.subjects:
-                    all_subjects.update(b.subjects)
-
-            return {
-                "success": True,
-                "book_id": book_id,
-                "title": book.title,
-                "current_subjects": book.subjects or [],
-                "current_library": book.library,
-                "suggested_subjects": suggested_subjects,
-                "suggested_library": suggested_library,
-                "existing_taxonomy": sorted(all_subjects),
-                "hint": "Review suggestions and apply with update_book(book_id, subjects=..., library=...)",
-            }
+        return suggest_tags_for_book(_get_config(), book_id)
     except Exception as e:
         return {"success": False, "error": str(e)}
 

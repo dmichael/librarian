@@ -148,6 +148,150 @@ def suggest_tags_for_text(sample: str) -> tuple[list[str], str | None]:
     return matched_subjects, suggested_library
 
 
+# ---------------------------------------------------------------------------
+# LLM-backed, taxonomy-aware tagging
+# ---------------------------------------------------------------------------
+
+
+def gather_taxonomy(config: dict) -> tuple[list[str], list[str]]:
+    """Return (subjects, libraries) currently in use, for taxonomy-aware tagging."""
+    from librarian.db import Book, session_scope
+
+    subjects: set[str] = set()
+    libraries: set[str] = set()
+    with session_scope(config) as session:
+        for b in session.query(Book).all():
+            if b.subjects:
+                subjects.update(b.subjects)
+            if b.library:
+                libraries.add(b.library)
+    return sorted(subjects), sorted(libraries)
+
+
+def _parse_tag_object(response: str) -> tuple[list[str], str | None]:
+    """Leniently parse the LLM's {"subjects": [...], "library": "..."} object."""
+    start = response.find("{")
+    end = response.rfind("}") + 1
+    if start < 0 or end <= start:
+        return [], None
+    try:
+        obj = json.loads(response[start:end])
+    except json.JSONDecodeError:
+        return [], None
+    subjects = [
+        s.strip() for s in obj.get("subjects", [])
+        if isinstance(s, str) and s.strip()
+    ]
+    library = obj.get("library")
+    library = library.strip() if isinstance(library, str) and library.strip() else None
+    return subjects, library
+
+
+def suggest_subjects_llm(
+    title: str,
+    authors: list[str],
+    content_sample: str,
+    subjects_taxonomy: list[str],
+    libraries_taxonomy: list[str],
+    config: dict,
+) -> tuple[list[str], str | None]:
+    """Ask the configured LLM for taxonomy-aware subjects + library."""
+    from librarian.llm import complete
+
+    existing_subjects = "\n".join(subjects_taxonomy) or "(none yet)"
+    existing_libraries = ", ".join(libraries_taxonomy) or "(none yet)"
+
+    prompt = f"""You are tagging a book to help BUILD and organize a personal research library.
+The library uses a slash-separated subject taxonomy (e.g. "finance/trading",
+"mathematics/dynamical-systems"). New books regularly introduce topics the
+taxonomy doesn't cover yet — proposing well-formed NEW tags is expected and is
+how the library grows. Do not limit yourself to the existing tags.
+
+Book title: {title}
+Authors: {', '.join(authors) or 'unknown'}
+
+Content sample:
+---
+{content_sample}
+---
+
+Subjects already in use — treat these as a guide to NAMING STYLE and a way to
+avoid near-duplicates, NOT as a closed list:
+{existing_subjects}
+
+Libraries (collections) already in use:
+{existing_libraries}
+
+Guidelines:
+- Pick 2-4 specific subjects that describe what THIS book is actually about.
+- Reuse an existing subject when one genuinely fits.
+- When the book covers ground the taxonomy lacks, CREATE a new "parent/child"
+  subject in the same style. Prefer extending an existing top-level parent
+  (e.g. "finance/<new-child>") over inventing a new parent, unless it's clearly
+  a new domain.
+- Favor specific, substantive tags over generic ones.
+- Choose the best-fitting existing library, or propose a new short lowercase slug.
+
+Return ONLY a JSON object, no other text:
+{{"subjects": ["parent/child", "parent/child"], "library": "slug"}}"""
+
+    response = complete(prompt, config, max_tokens=400)
+    if not response:
+        return [], None
+    return _parse_tag_object(response)
+
+
+def suggest_tags_for_book(config: dict, book_id: int) -> dict:
+    """LLM-backed, taxonomy-aware subject/library suggestion for one book.
+
+    Falls back to keyword heuristics only if the LLM is unreachable, so the
+    tool degrades instead of hard-failing.
+    """
+    from librarian.db import Book, session_scope
+
+    with session_scope(config) as session:
+        book = session.query(Book).filter(Book.id == book_id).first()
+        if not book:
+            return {"success": False, "error": f"Book {book_id} not found"}
+        title = book.title or ""
+        authors = list(book.authors or [])
+        current_subjects = list(book.subjects or [])
+        current_library = book.library
+
+    sample_size = config.get("classification", {}).get("sample_size", 5000)
+    output_path = expand_path(config["output_path"])
+    content_sample = sample_book_content(output_path / str(book_id), sample_size)
+
+    subjects_tax, libraries_tax = gather_taxonomy(config)
+
+    suggested_subjects, suggested_library = suggest_subjects_llm(
+        title, authors, content_sample, subjects_tax, libraries_tax, config
+    )
+    method = "llm"
+
+    if not suggested_subjects:
+        # LLM unreachable or unparseable — degrade to keyword heuristics.
+        kw_subjects, kw_library = suggest_tags_for_text(
+            " ".join([title, *authors, content_sample])
+        )
+        if kw_subjects or kw_library:
+            suggested_subjects, suggested_library = kw_subjects, kw_library
+            method = "keyword-fallback"
+
+    return {
+        "success": True,
+        "book_id": book_id,
+        "title": title,
+        "method": method,
+        "current_subjects": current_subjects,
+        "current_library": current_library,
+        "suggested_subjects": suggested_subjects,
+        "suggested_library": suggested_library,
+        "existing_taxonomy": subjects_tax,
+        "hint": "Review and apply with update_book(book_id, subjects=..., library=...).",
+    }
+
+
 def get_books(config: dict) -> dict[int, dict]:
     """Get book metadata from the database, keyed by id."""
     from librarian.db import get_book_metadata
