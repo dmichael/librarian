@@ -151,6 +151,16 @@ def extract_worker(book_id: int, source_path: str, output_dir: str, config: dict
             converted_path=str(book_output),
             extraction_duration_s=extraction_duration,
         )
+
+        # Record which backend ran (spark/modal for PDFs) so it's visible in
+        # book_status without digging through container logs.
+        if result.metadata.extraction_backend:
+            from librarian.db import update_book_fields
+
+            update_book_fields(
+                book_id, config,
+                extraction_backend=result.metadata.extraction_backend,
+            )
     except Exception as e:
         log.error(f"Extraction failed for book {book_id}: {e}")
         update_book_status(book_id, "failed", str(e), config)

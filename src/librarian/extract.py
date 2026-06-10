@@ -149,6 +149,7 @@ def extract_pdf(
                 format="pdf",
                 page_count=marker_result.get("page_count"),
                 extractors_run=["marker"],
+                extraction_backend=decision.backend,
             ))
         except Exception as e:
             print(f"  MARKER FAILED: {e}", file=sys.stderr, flush=True)

@@ -122,6 +122,7 @@ def book_to_dict(book: "Book") -> dict:
         "isbn": book.isbn or meta.get("isbn"),
         "publisher": meta.get("publisher"),
         "year": meta.get("year"),
+        "extraction_backend": meta.get("extraction_backend"),
         "subjects": list(book.subjects or []),
         "library": book.library,
         "status": book.status,
@@ -170,7 +171,7 @@ def get_book_metadata(
 
 # Non-column metadata keys that callers may stash in the JSONB blob. Anything
 # outside (columns ∪ this set) is rejected so a typo can't silently no-op.
-_JSONB_META_KEYS = {"publisher", "year"}
+_JSONB_META_KEYS = {"publisher", "year", "extraction_backend"}
 
 
 def update_book_fields(book_id: int, config: dict | None = None, **fields) -> bool:

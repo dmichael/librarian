@@ -34,6 +34,7 @@ class DocumentMetadata(BaseModel):
     # Provenance
     extractors_run: list[str] = Field(default_factory=list)
     extracted_at: str | None = None
+    extraction_backend: str | None = None  # PDF marker routing: "spark" | "modal"
 
 
 def content_hash_hex(file_path: Path) -> str:
@@ -84,6 +85,9 @@ def merge_metadata(*sources: DocumentMetadata) -> DocumentMetadata:
         for ext in source.extractors_run:
             if ext not in merged.extractors_run:
                 merged.extractors_run.append(ext)
+
+        if merged.extraction_backend is None and source.extraction_backend is not None:
+            merged.extraction_backend = source.extraction_backend
 
     return merged
 
