@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Callable
 
 from pydantic import BaseModel, Field
 
@@ -40,8 +41,15 @@ class ExtractionResult(BaseModel):
         return self.has_content and not self.errors
 
 
+# Progress callback: status_fn(message, *, backend=None). backend is passed
+# once, when the marker routing decision is made, so callers can surface it
+# while extraction is still running rather than after it completes.
+StatusFn = Callable[..., None]
+
+
 def extract(
     source: Path, output_dir: Path, config: dict | None = None,
+    status_fn: StatusFn | None = None,
 ) -> ExtractionResult:
     """Extract a single file to output_dir.
 
@@ -51,7 +59,7 @@ def extract(
     source_hash = compute_file_hash(source)
 
     if suffix == ".pdf":
-        errors, meta = extract_pdf(source, output_dir, config)
+        errors, meta = extract_pdf(source, output_dir, config, status_fn)
         # Marker is the primary content extractor for PDFs; its block JSON
         # is what makes the book indexable.
         from librarian.files import marker_content_json
@@ -105,6 +113,7 @@ def _extract_epub_with_metadata(
 
 def extract_pdf(
     source: Path, output_dir: Path, config: dict | None = None,
+    status_fn: StatusFn | None = None,
 ) -> tuple[list[str], DocumentMetadata]:
     """Run every PDF extractor over source. Each extractor owns its raw/<name>/.
 
@@ -150,6 +159,12 @@ def extract_pdf(
             f"(img_mpix={sig.img_mpix}, page_mpix={sig.page_megapix}, pages={sig.pages})",
             flush=True,
         )
+        if status_fn:
+            status_fn(
+                f"Extracting {sig.pages} pages via marker on {decision.backend} "
+                f"({decision.reason})...",
+                backend=decision.backend,
+            )
         # Route oversized scans to Modal (deployed GPU function); everything else
         # to the local Spark. The Modal backend ignores spark_url.
         try:

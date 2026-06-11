@@ -163,6 +163,28 @@ def extract_book(book_id: int, force: bool = False) -> dict:
 
 
 @mcp.tool()
+def enrich_book(book_id: int, force: bool = True, dry_run: bool = False) -> dict:
+    """Enrich book metadata (title/authors/publisher/year/ISBN) from extracted content.
+
+    Enrichment runs automatically after every extraction; this tool is the
+    out-of-band entry point for books that are already extracted. Per-field
+    rules are conservative: existing non-placeholder values are not overwritten
+    (use update_book for manual corrections).
+
+    Args:
+        book_id: ID of the book to enrich
+        force: Enrich even if metadata looks complete (default True)
+        dry_run: Report what would change without applying it
+    """
+    try:
+        from librarian.enrich import enrich_book as _enrich_book
+
+        return _enrich_book(book_id, _get_config(), force=force, dry_run=dry_run)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
 def index_book(book_id: int) -> dict:
     """Index an extracted book into the vector store.
 

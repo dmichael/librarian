@@ -95,3 +95,43 @@ def test_extraction_backend_recorded(tmp_path: Path, monkeypatch):
     assert errors == []
     assert meta.extraction_backend == "modal"
     assert meta.extractors_run == ["pdftotext", "marker"]
+
+
+def test_status_fn_reports_backend_at_routing_time(tmp_path: Path, monkeypatch):
+    # The routing decision must reach the caller via status_fn when it's made,
+    # not only in the post-extraction metadata — book_status should show the
+    # backend while a long extraction is still running.
+    from librarian.extract_routing import PdfSignals, RoutingDecision
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    decision = RoutingDecision(
+        backend="modal",
+        reason="img_mpix 1200 > 900",
+        signals=PdfSignals(pages=400, img_mpix=1200.0, page_megapix=13.0, size_mb=21.0),
+    )
+    monkeypatch.setattr("librarian.extract.route_pdf", lambda p: decision)
+
+    calls = []
+
+    def fake_marker_extract(*a, **k):
+        # Captures ordering: status_fn must have fired before marker ran.
+        calls.append(("marker", None))
+        return {"page_count": 400}
+
+    monkeypatch.setattr("librarian.extractors.marker.extract", fake_marker_extract)
+    monkeypatch.setattr(
+        "librarian.extractors.pdftotext.extract",
+        lambda *a, **k: {"page_count": 400},
+    )
+
+    def status_fn(message, *, backend=None):
+        calls.append(("status", backend))
+        assert "modal" in message
+
+    config = {"extractors": {"spark_url": "http://spark.test:8001"}}
+    errors, meta = extract_mod.extract_pdf(pdf, tmp_path, config, status_fn)
+
+    assert errors == []
+    assert calls == [("status", "modal"), ("marker", None)]

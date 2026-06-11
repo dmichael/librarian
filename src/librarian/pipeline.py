@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from librarian.config import expand_path
-from librarian.db import Book, get_session, session_scope
+from librarian.db import Book, get_session, session_scope, update_book_fields
 
 log = logging.getLogger(__name__)
 
@@ -127,8 +127,16 @@ def extract_worker(book_id: int, source_path: str, output_dir: str, config: dict
             f"Extracting {source.name} ({file_size_mb:.1f} MB)...",
             config,
         )
+
+        def on_status(message: str, *, backend: str | None = None) -> None:
+            update_book_status(book_id, "extracting", message, config)
+            # Persist the routing decision the moment it's made, so
+            # book_status shows the backend while extraction is running.
+            if backend:
+                update_book_fields(book_id, config, extraction_backend=backend)
+
         t0 = time.monotonic()
-        result = extract(source, book_output, config)
+        result = extract(source, book_output, config, status_fn=on_status)
         extraction_duration = time.monotonic() - t0
 
         # Without primary content (blocks/markdown) there is nothing to
@@ -155,12 +163,23 @@ def extract_worker(book_id: int, source_path: str, output_dir: str, config: dict
         # Record which backend ran (spark/modal for PDFs) so it's visible in
         # book_status without digging through container logs.
         if result.metadata.extraction_backend:
-            from librarian.db import update_book_fields
-
             update_book_fields(
                 book_id, config,
                 extraction_backend=result.metadata.extraction_backend,
             )
+
+        # Enrich metadata from the freshly extracted content. force=True so it
+        # runs even when metadata looks complete (per-field rules in enrich_book
+        # still protect existing non-placeholder values). Best-effort: an
+        # enrichment failure must never fail an extracted book.
+        try:
+            from librarian.enrich import enrich_book
+
+            enrich_result = enrich_book(book_id, config, force=True)
+            detail = "; ".join(enrich_result["changes"]) or enrich_result["message"]
+            log.info(f"Enrichment for book {book_id}: {enrich_result['status']} ({detail})")
+        except Exception as e:
+            log.error(f"Enrichment failed for book {book_id}: {e}")
     except Exception as e:
         log.error(f"Extraction failed for book {book_id}: {e}")
         update_book_status(book_id, "failed", str(e), config)

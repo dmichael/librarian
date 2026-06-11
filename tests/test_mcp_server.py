@@ -4,6 +4,7 @@ import inspect
 
 from librarian.catalog import build_vector_metadata_updates
 from librarian.mcp_server import (
+    enrich_book,
     get_book_image,
     list_book_images,
     list_spans,
@@ -39,6 +40,15 @@ def test_search_tool_exposes_block_type_filter():
 
     assert "block_type" in signature.parameters
     assert signature.parameters["block_type"].default is None
+
+
+def test_enrich_tool_defaults_to_force():
+    # Out-of-band enrichment must run even when metadata looks complete.
+    signature = inspect.signature(enrich_book)
+
+    assert list(signature.parameters) == ["book_id", "force", "dry_run"]
+    assert signature.parameters["force"].default is True
+    assert signature.parameters["dry_run"].default is False
 
 
 def test_image_tools_expose_expected_parameters():
