@@ -270,6 +270,30 @@ def test_parse_fulltext_tei_rejects_non_tei():
         parse_fulltext_tei("<html><body>503 Service Unavailable</body></html>")
 
 
+def test_extract_fulltext_500_error_includes_body(tmp_path: Path, monkeypatch):
+    import httpx
+    import pytest
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    # GROBID's failure reason lives in the response body — the raised error
+    # must carry it, not just the bare status code and URL.
+    url = "http://grobid.test:8070/api/processFulltextDocument"
+    response = httpx.Response(
+        500,
+        text="[GENERAL] An exception occurred while running Grobid: timeout",
+        request=httpx.Request("POST", url),
+    )
+    monkeypatch.setattr(
+        "librarian.extractors.grobid.httpx.post",
+        lambda *args, **kwargs: response,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError, match="exception occurred while running Grobid"):
+        extract_fulltext(pdf, tmp_path, base_url="http://grobid.test:8070")
+
+
 def test_extract_fulltext_non_tei_200_raises_and_writes_nothing(tmp_path: Path, monkeypatch):
     import pytest
 

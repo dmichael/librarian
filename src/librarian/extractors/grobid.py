@@ -106,6 +106,25 @@ class Figure(BaseModel):
     type: str = "figure"
 
 
+def _raise_with_body(response: httpx.Response) -> None:
+    """raise_for_status, but keep the (truncated) response body.
+
+    GROBID puts the actual failure reason in the error body; httpx's default
+    HTTPStatusError message carries only the status code and URL, which makes
+    server-side failures undiagnosable after the fact.
+    """
+    if response.status_code >= 400:
+        body = " ".join(response.text.split())
+        if len(body) > 500:
+            body = body[:500] + "…"
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url "
+            f"'{response.request.url}': {body or '(empty body)'}",
+            request=response.request,
+            response=response,
+        )
+
+
 def extract(
     source: Path,
     book_dir: Path,
@@ -142,7 +161,7 @@ def extract(
     if response.status_code == 204:
         tei = '<listBibl xmlns="http://www.tei-c.org/ns/1.0" />'
     else:
-        response.raise_for_status()
+        _raise_with_body(response)
         tei = response.text
 
     out_dir = book_dir / "raw" / "grobid"
@@ -222,7 +241,7 @@ def extract_fulltext(
         )
         result = FulltextResult(references=[], citations=[], sections=[], figures=[])
     else:
-        response.raise_for_status()
+        _raise_with_body(response)
         tei = response.text
         result = parse_fulltext_tei(tei)
 
