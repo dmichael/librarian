@@ -122,6 +122,12 @@ class PgvectorStore:
                 embed_dim=self._embed_dim,
                 use_jsonb=True,
                 perform_setup=True,
+                # Stores are cached for the process lifetime; without pre-ping
+                # a Postgres restart leaves every pooled connection dead and
+                # the first insert afterwards fails with "SSL connection has
+                # been closed unexpectedly" (librarian's own engine in db.py
+                # already pre-pings).
+                create_engine_kwargs={"pool_pre_ping": True},
             )
         return self._stores[collection_name]
 

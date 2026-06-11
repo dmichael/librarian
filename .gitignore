@@ -11,9 +11,9 @@ build/
 
 # Data directories (should never be in repo - lives at ~/data/librarian/)
 calibre/
-books/
-converted/
-vectorstore/
+/books/
+/converted/
+/vectorstore/
 
 # Agent worktrees
 .worktrees/
