@@ -72,6 +72,64 @@ def test_audit_no_change_keeps_existing_structure(monkeypatch):
     assert len(result.structure.chapters) == 1
 
 
+def test_headings_carry_content_peek(monkeypatch):
+    # The peek is what lets the LLM tell a body chapter opener from the same
+    # title repeated above its endnotes (the book-102 failure: back-matter
+    # 'CHAPTER 2: ENDOWMENT PURPOSES' headings won over the bare body titles).
+    blocks = [
+        _header("Endowment Purposes", page=10),
+        _text("Endowment assets permit an institution to operate with stability.", page=10),
+        _header("CHAPTER 2: ENDOWMENT PURPOSES", page=150),
+        _text("1. Henry Hansmann, 'Why Do Universities Have Endowments?' 3-42.", page=150),
+    ]
+    structure = extract_structure_from_blocks(blocks, title="Book")
+
+    prompts = []
+
+    def fake_complete(prompt, config, max_tokens=1024, timeout=120.0):
+        prompts.append(prompt)
+        return '{"action":"no_change","chapters":[],"reasoning":"r"}'
+
+    monkeypatch.setattr(audit_mod.llm, "complete", fake_complete)
+    audit_mod.audit_structure_with_llm(structure, blocks, "Book", {})
+
+    assert '"peek"' in prompts[0]
+    assert "operate with stability" in prompts[0]
+    assert "Henry Hansmann" in prompts[0]
+
+
+def test_audit_artifact_persists_exchange_and_reasoning(monkeypatch, tmp_path):
+    blocks = [
+        _header("Chapter One", page=5),
+        _text("Body prose.", page=5),
+    ]
+    structure = extract_structure_from_blocks(blocks, title="Book")
+
+    monkeypatch.setattr(
+        audit_mod.llm,
+        "complete",
+        lambda *args, **kwargs: (
+            '{"action":"replace_structure","chapters":'
+            '[{"number":1,"title":"One","start_block_idx":0}],'
+            '"reasoning":"block 0 peek is narrative prose"}'
+        ),
+    )
+
+    result = audit_mod.audit_structure_with_llm(
+        structure, blocks, "Book", {}, artifact_dir=tmp_path,
+    )
+    assert result.applied
+
+    import json
+
+    artifact = json.loads((tmp_path / "raw" / "llm" / "structure_audit.json").read_text())
+    assert artifact["applied"] is True
+    assert artifact["reasoning"] == "block 0 peek is narrative prose"
+    assert "Chapter One" in artifact["prompt"]
+    assert artifact["chapters"] == [{"number": 1, "title": "One", "page_start": 5}]
+    assert "replace_structure" in artifact["response"]
+
+
 def test_audit_rejects_duplicate_or_unordered_chapters(monkeypatch):
     blocks = [
         _header("Chapter One"),

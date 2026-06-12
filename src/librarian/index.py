@@ -46,6 +46,7 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
+from librarian.config import expand_path
 from librarian.embeddings import get_embed_model
 from librarian.metadata_types import (
     META_BLOCK_INDEX,
@@ -613,7 +614,10 @@ def index_book(
     if blocks:
         structure = extract_structure_from_blocks(blocks, title=book_title)
         structure_source = "blocks"
-        audit = audit_structure_with_llm(structure, blocks, book_title, config)
+        audit = audit_structure_with_llm(
+            structure, blocks, book_title, config,
+            artifact_dir=expand_path(config["output_path"]) / str(book_id),
+        )
         structure = audit.structure
         if audit.applied:
             structure_source = "blocks+llm"

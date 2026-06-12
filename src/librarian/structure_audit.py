@@ -11,9 +11,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import librarian.llm as llm
+from librarian.document_metadata import now_iso
 from librarian.structure import Chapter, DocumentStructure, Section
 
 log = logging.getLogger(__name__)
@@ -33,12 +35,17 @@ def audit_structure_with_llm(
     blocks: list[dict] | None,
     title: str,
     config: dict,
+    artifact_dir: Path | None = None,
 ) -> StructureAuditResult:
     """Run one LLM structure audit and return the structure to index.
 
     The LLM decides whether the current outline should be replaced.  Local code
     only checks referential integrity: proposed starts must be real heading
     blocks, unique, and ordered.
+
+    When artifact_dir is given, the full exchange (prompt, raw response, the
+    model's reasoning, and the local decision) is persisted to
+    artifact_dir/raw/llm/structure_audit.json for offline analysis.
     """
     if not blocks:
         return StructureAuditResult(structure, False, "no blocks available")
@@ -47,35 +54,84 @@ def audit_structure_with_llm(
     if not headings:
         return StructureAuditResult(structure, False, "no headings available")
 
-    response = llm.complete(
-        _build_prompt(title, headings, structure),
-        config,
-        max_tokens=4096,
-        timeout=180.0,
-    )
+    prompt = _build_prompt(title, headings, structure)
+    response = llm.complete(prompt, config, max_tokens=4096, timeout=180.0)
+
+    result, reasoning = _decide(structure, blocks, title, response)
+    _save_audit_artifact(artifact_dir, config, prompt, response, reasoning, result)
+    return result
+
+
+def _decide(
+    structure: DocumentStructure,
+    blocks: list[dict],
+    title: str,
+    response: str,
+) -> tuple[StructureAuditResult, str]:
+    """Turn the raw LLM response into a validated audit result."""
     if not response.strip():
-        return StructureAuditResult(structure, False, "empty LLM response")
+        return StructureAuditResult(structure, False, "empty LLM response"), ""
 
     try:
         payload = _loads_json_object(response)
     except ValueError as exc:
         log.warning("Structure audit returned invalid JSON: %s", exc)
-        return StructureAuditResult(structure, False, "invalid JSON")
+        return StructureAuditResult(structure, False, "invalid JSON"), ""
 
+    reasoning = str(payload.get("reasoning") or "")
     action = str(payload.get("action", "")).strip().lower()
     chapters = payload.get("chapters") or []
     if action == "no_change" or not chapters:
-        return StructureAuditResult(structure, False, "LLM requested no change")
+        return StructureAuditResult(structure, False, "LLM requested no change"), reasoning
 
     if action not in {"replace_structure", "replace_chapters", "repair"}:
-        return StructureAuditResult(structure, False, f"unsupported action: {action}")
+        return StructureAuditResult(structure, False, f"unsupported action: {action}"), reasoning
 
     validated = _validate_chapters(chapters, blocks)
     if not validated:
-        return StructureAuditResult(structure, False, "invalid chapter references")
+        return StructureAuditResult(structure, False, "invalid chapter references"), reasoning
 
     repaired = _structure_from_chapters(blocks, title, validated)
-    return StructureAuditResult(repaired, True, f"applied {len(validated)} chapters")
+    return StructureAuditResult(repaired, True, f"applied {len(validated)} chapters"), reasoning
+
+
+def _save_audit_artifact(
+    artifact_dir: Path | None,
+    config: dict,
+    prompt: str,
+    response: str,
+    reasoning: str,
+    result: StructureAuditResult,
+) -> None:
+    """Persist the audit exchange for offline analysis. Never raises."""
+    if artifact_dir is None:
+        return
+    llm_config = config.get("classification", {})
+    payload = {
+        "audited_at": now_iso(),
+        "provider": llm_config.get("provider", llm.DEFAULT_PROVIDER),
+        "model": llm_config.get("model", llm.DEFAULT_MODEL),
+        "applied": result.applied,
+        "reason": result.reason,
+        "reasoning": reasoning,
+        "chapters": [
+            {"number": ch.number, "title": ch.title, "page_start": ch.page_start}
+            for ch in result.structure.chapters
+        ],
+        "prompt": prompt,
+        "response": response,
+    }
+    try:
+        out_dir = artifact_dir / "raw" / "llm"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "structure_audit.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        )
+    except OSError as exc:
+        log.warning("Could not save structure audit artifact: %s", exc)
+
+
+PEEK_CHARS = 180
 
 
 def _heading_records(blocks: list[dict]) -> list[dict[str, Any]]:
@@ -90,8 +146,32 @@ def _heading_records(blocks: list[dict]) -> list[dict[str, Any]]:
             "block_idx": idx,
             "page": block.get("page"),
             "text": text[:240],
+            "peek": _content_peek(blocks, idx),
         })
     return records
+
+
+def _content_peek(blocks: list[dict], heading_idx: int) -> str:
+    """First PEEK_CHARS of body text after a heading.
+
+    This is what disambiguates a heading's *role*: a true chapter opener is
+    followed by narrative prose, while the same title in the table of contents,
+    endnotes, or bibliography is followed by more headings, page numbers, or
+    numbered citations. Heading text alone cannot make that distinction.
+    """
+    parts: list[str] = []
+    length = 0
+    for block in blocks[heading_idx + 1:]:
+        if block.get("block_type") == "SectionHeader":
+            break
+        text = (block.get("text") or "").strip()
+        if not text:
+            continue
+        parts.append(text)
+        length += len(text) + 1
+        if length >= PEEK_CHARS:
+            break
+    return " ".join(parts)[:PEEK_CHARS]
 
 
 def _build_prompt(
@@ -112,17 +192,28 @@ def _build_prompt(
         "You are auditing the structure of an extracted document for indexing.\n"
         "Given the ordered SectionHeader blocks, decide whether the book has "
         "chapter starts that should replace the current chapter list.\n\n"
+        "Each heading carries a 'peek': the first body text that follows it. "
+        "Use it to judge the heading's role — a true chapter opener is followed "
+        "by narrative prose; the same title in the table of contents, endnotes, "
+        "or bibliography is followed by page numbers or numbered citations.\n\n"
         "Return JSON only. Use one of these shapes:\n"
-        '{"action":"no_change","chapters":[]}\n'
+        '{"action":"no_change","chapters":[],"reasoning":"one short paragraph"}\n'
         "or\n"
         '{"action":"replace_structure","chapters":[{"number":1,'
         '"title":"Chapter title","start_block_idx":123,'
-        '"evidence":"heading text copied from the provided heading"}]}\n\n'
+        '"evidence":"heading text copied from the provided heading"}],'
+        '"reasoning":"one short paragraph"}\n\n'
         "Rules:\n"
         "- Use actual body chapter starts, not table-of-contents entries.\n"
+        "- Do not use notes/endnotes/bibliography headings as chapter starts: "
+        "if a heading's peek is dominated by numbered citations or references, "
+        "it is back matter even when it is labeled 'CHAPTER N'. Prefer the "
+        "body heading whose peek is prose, even if it lacks a chapter number.\n"
         "- Only use start_block_idx values present in the provided headings.\n"
         "- Titles should be copied or lightly normalized from the same or adjacent headings.\n"
-        "- If the current structure is already correct, return no_change.\n\n"
+        "- If the current structure is already correct, return no_change.\n"
+        "- In 'reasoning', explain which candidate headings you weighed and why "
+        "you chose or rejected them.\n\n"
         f"Document data:\n{json.dumps(payload, ensure_ascii=False)}"
     )
 
