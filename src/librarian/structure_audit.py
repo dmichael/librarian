@@ -461,6 +461,13 @@ def _loads_json_object(text: str) -> dict:
 
 
 def _validate_chapters(chapters: list[Any], blocks: list[dict]) -> list[dict[str, Any]]:
+    """Keep the well-formed, in-order, unique chapter references; skip the rest.
+
+    Skipping a bad reference (rather than discarding the whole proposal) makes the
+    audit robust to the occasional malformed or out-of-order entry — one bad
+    chapter no longer forces a fall back to the title-less heuristic structure,
+    which is the difference between a stable apply and run-to-run flakiness.
+    """
     validated = []
     seen_numbers: set[int] = set()
     seen_starts: set[int] = set()
@@ -469,25 +476,31 @@ def _validate_chapters(chapters: list[Any], blocks: list[dict]) -> list[dict[str
 
     for item in chapters:
         if not isinstance(item, dict):
-            return []
+            continue
         try:
             number = int(item["number"])
             start = int(item["start_block_idx"])
         except (KeyError, TypeError, ValueError):
-            return []
+            continue
 
         if number <= 0 or start < 0 or start >= len(blocks):
-            return []
+            continue
         if number in seen_numbers or start in seen_starts:
-            return []
+            continue
         if start <= previous_start or number <= previous_number:
-            return []
+            continue
         if blocks[start].get("block_type") != "SectionHeader":
-            return []
+            continue
 
         title = _clean_heading(str(item.get("title") or ""))
-        if not title:
-            title = _title_from_nearby_heading(blocks, start)
+        # Empty, or a bare "Chapter N" label: the descriptive title lives in the
+        # adjacent heading (some books split the number and the title into two
+        # separate headings). Pull the real title from there.
+        if not title or re.fullmatch(r"chapter\s+\d+", title, re.IGNORECASE):
+            title = _title_from_nearby_heading(blocks, start) or title
+        # Strip a leading "Chapter N" label when one heading bundles number+title
+        # (e.g. "Chapter 16 Hedge Funds" -> "Hedge Funds").
+        title = re.sub(r"^chapter\s+\d+\b[\s:.\-–]*", "", title, flags=re.IGNORECASE).strip() or title
 
         validated.append({"number": number, "title": title, "start": start})
         seen_numbers.add(number)
