@@ -54,8 +54,19 @@ def audit_structure_with_llm(
     if not headings:
         return StructureAuditResult(structure, False, "no headings available")
 
-    prompt = _build_prompt(title, headings, structure)
-    response = llm.complete(prompt, config, max_tokens=4096, timeout=180.0)
+    prompt, trim_note = _fit_audit_prompt(title, headings, structure)
+    if trim_note:
+        log.warning(
+            "Structure audit prompt trimmed to fit the model context (%s) for %r",
+            trim_note, title,
+        )
+    response = llm.complete(prompt, config, max_tokens=2048, timeout=180.0)
+    if not response.strip():
+        log.warning(
+            "Structure audit got an empty response for %r; book falls back to "
+            "block/section structure with no chapters (prompt was %d chars)",
+            title, len(prompt),
+        )
 
     result, reasoning = _decide(structure, blocks, title, response)
     _save_audit_artifact(artifact_dir, config, prompt, response, reasoning, result)
@@ -132,6 +143,14 @@ def _save_audit_artifact(
 
 
 PEEK_CHARS = 180
+
+# The audit prompt lists every SectionHeader with a body peek. A book with
+# hundreds of headings can push it past the serving model's context window (the
+# dedicated aux serves a 16K-token window), making the call return empty so the
+# book silently loses its chapter structure. Keep the whole prompt under this
+# char budget — conservative for a 16K-token window after the answer and
+# headroom — shrinking peeks first so every heading still reaches the model.
+PROMPT_CHAR_BUDGET = 38000
 
 
 def _heading_records(blocks: list[dict]) -> list[dict[str, Any]]:
@@ -215,6 +234,37 @@ def _build_prompt(
         "- In 'reasoning', explain which candidate headings you weighed and why "
         "you chose or rejected them.\n\n"
         f"Document data:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _fit_audit_prompt(
+    title: str,
+    headings: list[dict[str, Any]],
+    structure: DocumentStructure,
+) -> tuple[str, str | None]:
+    """Build the audit prompt, keeping it under PROMPT_CHAR_BUDGET.
+
+    Peeks are the bulk of the prompt, so shrink them (largest cap that still
+    fits wins) before dropping any headings. Returns (prompt, note); note
+    describes the trimming, or is None when the full prompt already fit.
+    """
+    prompt = _build_prompt(title, headings, structure)
+    if len(prompt) <= PROMPT_CHAR_BUDGET:
+        return prompt, None
+    for cap in (120, 96, 64, 40, 0):
+        trimmed = [{**h, "peek": h["peek"][:cap]} for h in headings]
+        prompt = _build_prompt(title, trimmed, structure)
+        if len(prompt) <= PROMPT_CHAR_BUDGET:
+            return prompt, f"peeks capped at {cap} chars"
+    # Even peekless heading text overflows (hundreds of headings): keep as many
+    # as fit, estimated from per-heading cost so this stays O(n).
+    peekless = [{**h, "peek": ""} for h in headings]
+    base = len(_build_prompt(title, [], structure))
+    per = max(1, (len(_build_prompt(title, peekless[:20], structure)) - base) // 20)
+    keep = max(1, (PROMPT_CHAR_BUDGET - base) // per)
+    kept = peekless[:keep]
+    return _build_prompt(title, kept, structure), (
+        f"peeks dropped and headings truncated {len(headings)}->{len(kept)}"
     )
 
 
