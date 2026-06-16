@@ -507,6 +507,73 @@ def get_section_for_block(structure: DocumentStructure, block_idx: int) -> str |
     return structure.block_to_section.get(block_idx)
 
 
+# Exact-match titles (whole heading must be one of these) that mark the start of
+# back matter. Exact-match avoids catching body headings like "Index Funds".
+_BACK_MATTER_TITLE = re.compile(
+    r"^\s*(index|about the authors?|colophon"
+    r"|(wiley\s+)?end[- ]user license agreement)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _body_end_index(blocks: list[dict]) -> int | None:
+    """First block where back matter begins, searched in the document's back half.
+
+    Books close the body with conventional back matter: an "Index", an
+    "About the Author(s)" / "Colophon" / EULA heading, or the index's run of
+    single-letter headings (A, B, C, ...). Returns the earliest such block index
+    in the back half of the document, or None if none is found. Searching only
+    the back half avoids front-matter false positives.
+    """
+    n = len(blocks)
+    if n < 20:
+        return None
+    run_len = 0
+    run_start: int | None = None
+    for idx in range(n // 2, n):
+        block = blocks[idx]
+        if block.get("block_type") != "SectionHeader":
+            continue
+        text = block.get("text") or _strip_html(block.get("html", ""))
+        text = re.sub(r"^#+\s*", "", text).strip()
+        text = re.sub(r"\*{1,2}", "", text).strip()
+        if not text:
+            continue
+        if _BACK_MATTER_TITLE.match(text):
+            return idx
+        if len(text) <= 2:  # an index letter (A, B, ...), possibly OCR-garbled
+            if run_len == 0:
+                run_start = idx
+            run_len += 1
+            if run_len >= 4:
+                return run_start
+        else:
+            run_len = 0
+            run_start = None
+    return None
+
+
+def trim_back_matter(structure: DocumentStructure, blocks: list[dict]) -> DocumentStructure:
+    """Drop back matter so it doesn't fold into the last chapter.
+
+    Removes block->chapter / block->section assignments at or after the
+    back-matter boundary, so the final chapter's range ends with the body and the
+    index / EULA / store cruft never reaches the section audit. The back-matter
+    text is still embedded and searchable; it just stops being mis-filed as
+    sections of the last chapter.
+    """
+    end = _body_end_index(blocks)
+    if end is None:
+        return structure
+    structure.block_to_chapter = {
+        i: c for i, c in structure.block_to_chapter.items() if i < end
+    }
+    structure.block_to_section = {
+        i: t for i, t in structure.block_to_section.items() if i < end
+    }
+    return structure
+
+
 def get_chapter_for_block(structure: DocumentStructure, block_idx: int) -> Chapter | None:
     """Get the chapter that a block belongs to, based on reading order.
 

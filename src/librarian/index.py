@@ -72,6 +72,7 @@ from librarian.structure import (
     DocumentStructure,
     parse_structure,
     extract_structure_from_blocks,
+    trim_back_matter,
     validate_structure,
     get_context_for_page,
     get_hierarchy_for_block,
@@ -624,6 +625,9 @@ def index_book(
             print(f"  Structure audit: {audit.reason}")
         else:
             print(f"  Structure audit: no change ({audit.reason})")
+        # Drop back matter (index, EULA, about-the-author, colophon) so it does
+        # not fold into the last chapter's range or its section audit.
+        structure = trim_back_matter(structure, blocks)
         # Per-chapter section audit: replace the heuristic "every SectionHeader is
         # a section" with a focused LLM pass per chapter. Keeps a chapter's
         # heuristic sections if its audit fails, so it only ever improves on them.
