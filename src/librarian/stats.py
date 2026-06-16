@@ -214,6 +214,55 @@ def get_book_toc(config: dict, book_id: int) -> list[str]:
     return [doc for doc, _ in results]
 
 
+def recompute_structure(config: dict, book_id: int, use_llm: bool = True):
+    """Run the structure pipeline fresh from a book's marker blocks, in memory.
+
+    Returns (structure, source, n_blocks) without embedding, persisting, or
+    touching the index — a non-destructive dry run for tuning the structure
+    methods. Returns (None, reason, 0) if the book's blocks are unavailable.
+    """
+    from librarian.config import expand_path
+    from librarian.db import get_book_metadata
+    from librarian.files import load_extracted_blocks
+    from librarian.structure import extract_structure_from_blocks, trim_back_matter
+    from librarian.structure_audit import (
+        audit_structure_with_llm,
+        refine_chapter_sections,
+    )
+
+    book_dir = expand_path(config["output_path"]) / str(book_id)
+    blocks = load_extracted_blocks(book_dir)
+    if not blocks:
+        return None, "no marker blocks on disk (extract the book first)", 0
+
+    meta = get_book_metadata([book_id], config).get(book_id) or {}
+    title = meta.get("title") or f"Book {book_id}"
+
+    structure = extract_structure_from_blocks(blocks, title=title)
+    source = "blocks"
+    if use_llm:
+        audit = audit_structure_with_llm(structure, blocks, title, config)
+        structure = audit.structure
+        if audit.applied:
+            source = "blocks+llm"
+    structure = trim_back_matter(structure, blocks)
+    if use_llm and structure.chapters:
+        structure = refine_chapter_sections(structure, blocks, config)
+    return structure, source, len(blocks)
+
+
+def _print_structure(structure, source: str, book_id: int) -> None:
+    print(f"Structure preview — Book {book_id} (source={source}; dry run, nothing written)")
+    print("=" * 60)
+    if not structure.chapters:
+        print("  (no chapters detected)")
+        return
+    for ch in structure.chapters:
+        print(f"Ch {ch.number}: {ch.title or '(untitled)'}  [{len(ch.sections)} sections]")
+        for sec in ch.sections:
+            print(f"    - {sec.title}")
+
+
 def toc_main():
     """CLI entry point for librarian-toc."""
     import argparse
@@ -240,6 +289,23 @@ Use 'librarian-stats' to see all indexed books and their IDs.
         action="store_true",
         help="List all indexed books"
     )
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Run the structure methods fresh from the book's blocks and print "
+             "the result, without embedding or persisting anything (dry run)",
+    )
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="With --recompute: heuristic structure only, no LLM audit (instant)",
+    )
+    parser.add_argument(
+        "--save",
+        metavar="FILE",
+        help="With --recompute: also write the structure JSON here (for diffing); "
+             "still does not touch the index",
+    )
 
     args = parser.parse_args()
     config = load_config()
@@ -254,6 +320,21 @@ Use 'librarian-stats' to see all indexed books and their IDs.
 
     if args.book_id is None:
         parser.print_help()
+        return
+
+    if args.recompute:
+        structure, source, n_blocks = recompute_structure(
+            config, args.book_id, use_llm=not args.no_llm
+        )
+        if structure is None:
+            print(f"Cannot recompute book {args.book_id}: {source}")
+            return
+        _print_structure(structure, source, args.book_id)
+        if args.save:
+            from librarian.spans import _structure_artifact
+            payload = _structure_artifact(args.book_id, structure, source, None, n_blocks)
+            Path(args.save).write_text(json.dumps(payload, indent=2) + "\n")
+            print(f"\nWrote structure JSON to {args.save} (index not modified)")
         return
 
     toc_blocks = get_book_toc(config, args.book_id)
