@@ -54,7 +54,19 @@ def audit_structure_with_llm(
     if not headings:
         return StructureAuditResult(structure, False, "no headings available")
 
-    prompt, trim_note = _fit_audit_prompt(title, headings, structure)
+    # Chapters sit at the document's top heading level. Restrict candidates to
+    # that level so the list is short enough to keep peeks (the signal that
+    # separates real chapters from sections/appendices) — the model judges
+    # ~chapters, not every heading. Fall back to all headings if level info is
+    # missing or the filter would empty the list.
+    chapter_level = _chapter_level(headings)
+    candidates = headings
+    if chapter_level is not None:
+        at_level = [h for h in headings if h.get("level") == chapter_level]
+        if at_level:
+            candidates = at_level
+
+    prompt, trim_note = _fit_audit_prompt(title, candidates, structure)
     if trim_note:
         log.warning(
             "Structure audit prompt trimmed to fit the model context (%s) for %r",
@@ -165,10 +177,30 @@ def _heading_records(blocks: list[dict]) -> list[dict[str, Any]]:
         records.append({
             "block_idx": idx,
             "page": block.get("page"),
+            "level": _heading_level(block),
             "text": text[:240],
             "peek": _content_peek(blocks, idx),
         })
     return records
+
+
+def _chapter_level(records: list[dict[str, Any]]) -> int | None:
+    """The shallowest heading level that recurs in the body (>= 3 times).
+
+    Chapters sit at the document's top heading level. Restricting the audit's
+    candidates to that level keeps the list short enough to retain peeks (which
+    is what lets the model separate real chapters from sections and appendices),
+    and adapts to books whose chapters sit at level 2 instead of 1.
+    """
+    counts: dict[int, int] = {}
+    for r in records:
+        level = r.get("level")
+        if level is not None:
+            counts[level] = counts.get(level, 0) + 1
+    for level in sorted(counts):
+        if counts[level] >= 3:
+            return level
+    return None
 
 
 def _content_peek(blocks: list[dict], heading_idx: int) -> str:
