@@ -58,13 +58,16 @@ chunking:
 
 # provider: ollama | anthropic | openai (alias: vllm). See librarian/llm.py.
 classification:
-  # vLLM on the DGX Spark (OpenAI-compatible API; same box as Marker/GROBID).
+  # Dedicated always-on aux vLLM instance on the DGX Spark (port 8002, service
+  # spark-vllm-aux) — a small Qwen3.5-4B serving ONLY librarian's classification
+  # and summarization. Separate from the :8000 daily-driver coding model so the
+  # two don't contend and librarian's behavior doesn't drift when the coding
+  # model is swapped. Same box as Marker/GROBID. OpenAI-compatible API.
   provider: vllm
-  api_base: http://spark-f80b.local:8000/v1
-  # 'auto' = use whatever model vLLM is currently serving (discovered per call
-  # from /v1/models), so swapping the model on the Spark needs no change here.
-  # Pin an explicit id (e.g. Qwen/Qwen3.6-35B-A3B-FP8) for reproducibility.
-  model: auto
+  api_base: http://spark-f80b.local:8002/v1
+  # Pinned (not 'auto') because the aux instance serves exactly one model — pin
+  # keeps classification/summary behavior reproducible across deploys.
+  model: RedHatAI/Qwen3.5-4B-FP8-dynamic
   # extra_body is the per-model-FAMILY knob. Update when switching families:
   #   Qwen3      -> chat_template_kwargs.enable_thinking: false  (as below)
   #   gpt-oss    -> reasoning params instead
