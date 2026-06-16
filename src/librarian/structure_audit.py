@@ -144,12 +144,13 @@ def _save_audit_artifact(
 
 PEEK_CHARS = 180
 
-# The audit prompt lists every SectionHeader with a body peek. A book with
-# hundreds of headings can push it past the serving model's context window (the
-# dedicated aux serves a 16K-token window), making the call return empty so the
-# book silently loses its chapter structure. Keep the whole prompt under this
-# char budget — conservative for a 16K-token window after the answer and
-# headroom — shrinking peeks first so every heading still reaches the model.
+# The audit prompts serialize headings with body peeks, which run long for a book
+# with hundreds of headings. Keep a prompt under this char budget so it fits the
+# aux's 16K-token window after the answer (this content is ~4 chars/token). The
+# _fit_* helpers shrink peeks first so every heading still reaches the model. The
+# whole-book chapter audit hits this cap (and runs peekless on heading-heavy
+# books, which is what keeps its chapter split clean); the per-chapter section
+# audit is far smaller and fits with peeks intact.
 PROMPT_CHAR_BUDGET = 38000
 
 
@@ -266,6 +267,150 @@ def _fit_audit_prompt(
     return _build_prompt(title, kept, structure), (
         f"peeks dropped and headings truncated {len(headings)}->{len(kept)}"
     )
+
+
+def _heading_level(block: dict) -> int | None:
+    """Marker encodes heading depth as <hN> in the block html."""
+    m = re.search(r"<h(\d)", block.get("html", "") or "")
+    return int(m.group(1)) if m else None
+
+
+def _section_audit_prompt(chapter_title: str, candidates: list[dict[str, Any]]) -> str:
+    return (
+        "List the real sections of this one book chapter.\n"
+        f'Chapter: "{chapter_title}"\n'
+        "Each heading below has a 'level' (1=top-most, larger=deeper), the heading "
+        "'text', and a 'peek' of the body text right after it. A real section is a "
+        "top section-level heading (usually level 2) whose peek is narrative prose. "
+        "Deeper headings (larger level numbers) are sub-points, list items, "
+        "figure/table captions, or glossary/metadata lines — they are NOT sections; "
+        "omit them. Also omit table-of-contents and bibliography entries (peek is "
+        "page numbers or numbered citations).\n"
+        'Return JSON only: {"sections":[{"title":"...","start_block_idx":N}],'
+        '"reasoning":"one short paragraph"}\n'
+        "Use only start_block_idx values from the provided headings, in increasing "
+        "order.\n\n"
+        f"Headings:\n{json.dumps(candidates, ensure_ascii=False)}"
+    )
+
+
+def _fit_section_prompt(chapter_title: str, candidates: list[dict[str, Any]]) -> str:
+    """Per-chapter section prompt, bounded to the context like the chapter audit."""
+    prompt = _section_audit_prompt(chapter_title, candidates)
+    if len(prompt) <= PROMPT_CHAR_BUDGET:
+        return prompt
+    for cap in (120, 80, 48, 0):
+        trimmed = [{**c, "peek": c["peek"][:cap]} for c in candidates]
+        prompt = _section_audit_prompt(chapter_title, trimmed)
+        if len(prompt) <= PROMPT_CHAR_BUDGET:
+            return prompt
+    return prompt
+
+
+def _validate_sections(raw_sections: list, valid_idx: set[int]) -> list[tuple[int, str]]:
+    """Keep sections whose start_block_idx is a real in-range heading; sort, dedupe."""
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for s in raw_sections:
+        if not isinstance(s, dict):
+            continue
+        idx = s.get("start_block_idx")
+        title = str(s.get("title") or "").strip()
+        if not isinstance(idx, int) or idx not in valid_idx or not title or idx in seen:
+            continue
+        seen.add(idx)
+        out.append((idx, title))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def refine_chapter_sections(
+    structure: DocumentStructure,
+    blocks: list[dict] | None,
+    config: dict,
+) -> DocumentStructure:
+    """Replace each chapter's heuristic sections with a focused per-chapter audit.
+
+    The whole-book hierarchy is too much for a small model, but picking the real
+    sections of ONE chapter (only its headings, with level + peek) is a focused
+    task it handles well. Per chapter: audit -> set chapter.sections and remap
+    that chapter's blocks to the audited section titles. A chapter whose audit
+    fails or returns nothing keeps its heuristic sections, so this only ever
+    improves on the heuristic.
+    """
+    if not blocks or not structure.chapters:
+        return structure
+
+    chapter_blocks: dict[int, list[int]] = {}
+    for idx, ch_num in structure.block_to_chapter.items():
+        chapter_blocks.setdefault(ch_num, []).append(idx)
+
+    for chapter in structure.chapters:
+        idxs = sorted(chapter_blocks.get(chapter.number, []))
+        if not idxs:
+            continue
+        chapter_start = idxs[0]
+        candidates: list[dict[str, Any]] = []
+        for idx in idxs:
+            block = blocks[idx]
+            if block.get("block_type") != "SectionHeader" or idx == chapter_start:
+                continue
+            text = _clean_heading(block.get("text") or "")
+            if not text:
+                continue
+            candidates.append({
+                "block_idx": idx,
+                "level": _heading_level(block),
+                "text": text[:200],
+                "peek": _content_peek(blocks, idx),
+            })
+        if not candidates:
+            continue
+
+        prompt = _fit_section_prompt(chapter.breadcrumb, candidates)
+        response = llm.complete(prompt, config, max_tokens=4096, timeout=180.0)
+        if not response.strip():
+            log.warning("Section audit empty for %s; keeping heuristic sections",
+                        chapter.breadcrumb)
+            continue
+        try:
+            payload = _loads_json_object(response)
+        except ValueError:
+            log.warning("Section audit invalid JSON for %s; keeping heuristic sections",
+                        chapter.breadcrumb)
+            continue
+
+        valid_idx = {c["block_idx"] for c in candidates}
+        sections = _validate_sections(payload.get("sections") or [], valid_idx)
+        if not sections:
+            continue
+
+        chapter.sections = [
+            Section(
+                title=title,
+                page_start=(blocks[idx].get("page")
+                            if isinstance(blocks[idx].get("page"), int) else None),
+                parent_chapter=chapter.number,
+            )
+            for idx, title in sections
+        ]
+        # Remap this chapter's blocks to the audited section titles only. Blocks
+        # before the first section, or under dropped sub-headings, fold into the
+        # most recent audited section.
+        for idx in idxs:
+            structure.block_to_section.pop(idx, None)
+        current: str | None = None
+        si = 0
+        for idx in idxs:
+            while si < len(sections) and idx >= sections[si][0]:
+                current = sections[si][1]
+                si += 1
+            if current is not None:
+                structure.block_to_section[idx] = current
+        log.info("Section audit: %s -> %d sections (from %d candidates)",
+                 chapter.breadcrumb, len(sections), len(candidates))
+
+    return structure
 
 
 def _loads_json_object(text: str) -> dict:

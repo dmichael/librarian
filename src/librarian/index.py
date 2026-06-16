@@ -76,7 +76,7 @@ from librarian.structure import (
     get_context_for_page,
     get_hierarchy_for_block,
 )
-from librarian.structure_audit import audit_structure_with_llm
+from librarian.structure_audit import audit_structure_with_llm, refine_chapter_sections
 from librarian.spans import save_structure_artifact
 
 
@@ -624,6 +624,11 @@ def index_book(
             print(f"  Structure audit: {audit.reason}")
         else:
             print(f"  Structure audit: no change ({audit.reason})")
+        # Per-chapter section audit: replace the heuristic "every SectionHeader is
+        # a section" with a focused LLM pass per chapter. Keeps a chapter's
+        # heuristic sections if its audit fails, so it only ever improves on them.
+        if structure.chapters:
+            structure = refine_chapter_sections(structure, blocks, config)
     else:
         structure = parse_structure(raw_content, title=book_title)
         structure_source = "markdown"
