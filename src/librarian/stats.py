@@ -245,9 +245,13 @@ def recompute_structure(config: dict, book_id: int, use_llm: bool = True):
         structure = audit.structure
         if audit.applied:
             source = "blocks+llm"
-    structure = trim_back_matter(structure, blocks)
-    if use_llm and structure.chapters:
-        structure = refine_chapter_sections(structure, blocks, config)
+            structure = trim_back_matter(structure, blocks, body_end=audit.body_end)
+        else:
+            structure = trim_back_matter(structure, blocks)
+        if structure.chapters:
+            structure = refine_chapter_sections(structure, blocks, config)
+    else:
+        structure = trim_back_matter(structure, blocks)
     return structure, source, len(blocks)
 
 

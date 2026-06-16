@@ -28,6 +28,10 @@ class StructureAuditResult:
     structure: DocumentStructure
     applied: bool
     reason: str
+    # Block where back matter begins (index/glossary/about-the-author/etc.) as
+    # judged by the model, or None if the chapters run to the end. Consumed by
+    # trim_back_matter so the boundary is model-decided, not a title heuristic.
+    body_end: int | None = None
 
 
 def audit_structure_with_llm(
@@ -115,7 +119,29 @@ def _decide(
         return StructureAuditResult(structure, False, "invalid chapter references"), reasoning
 
     repaired = _structure_from_chapters(blocks, title, validated)
-    return StructureAuditResult(repaired, True, f"applied {len(validated)} chapters"), reasoning
+    body_end = _validate_body_end(payload.get("body_end_block_idx"), blocks, validated)
+    return (
+        StructureAuditResult(repaired, True, f"applied {len(validated)} chapters", body_end),
+        reasoning,
+    )
+
+
+def _validate_body_end(
+    value: Any, blocks: list[dict], validated: list[dict[str, Any]]
+) -> int | None:
+    """Validate the model's back-matter boundary: a real heading after the chapters."""
+    try:
+        idx = int(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= idx < len(blocks):
+        return None
+    if blocks[idx].get("block_type") != "SectionHeader":
+        return None
+    last_start = validated[-1]["start"] if validated else -1
+    if idx <= last_start:
+        return None
+    return idx
 
 
 def _save_audit_artifact(
@@ -254,8 +280,13 @@ def _build_prompt(
         '{"action":"replace_structure","chapters":[{"number":1,'
         '"title":"Chapter title","start_block_idx":123,'
         '"evidence":"heading text copied from the provided heading"}],'
-        '"reasoning":"one short paragraph"}\n\n'
+        '"body_end_block_idx":456,"reasoning":"one short paragraph"}\n\n'
         "Rules:\n"
+        "- Set body_end_block_idx to the block_idx of the first heading that "
+        "begins BACK MATTER — an index, glossary, endnotes or bibliography, "
+        "about-the-author, colophon, license, or trailing boilerplate — judged by "
+        "its peek (page numbers, citations, an author bio, or boilerplate, not "
+        "narrative prose). Use null if the chapters run to the end of the book.\n"
         "- Use actual body chapter starts, not table-of-contents entries.\n"
         "- Do not use notes/endnotes/bibliography headings as chapter starts: "
         "if a heading's peek is dominated by numbered citations or references, "

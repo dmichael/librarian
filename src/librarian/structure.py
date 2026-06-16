@@ -553,24 +553,50 @@ def _body_end_index(blocks: list[dict]) -> int | None:
     return None
 
 
-def trim_back_matter(structure: DocumentStructure, blocks: list[dict]) -> DocumentStructure:
+_AUTO_BODY_END = -1  # sentinel: detect the boundary via the marker heuristic
+
+
+def trim_back_matter(
+    structure: DocumentStructure, blocks: list[dict], body_end: int | None = _AUTO_BODY_END
+) -> DocumentStructure:
     """Drop back matter so it doesn't fold into the last chapter.
 
-    Removes block->chapter / block->section assignments at or after the
-    back-matter boundary, so the final chapter's range ends with the body and the
-    index / EULA / store cruft never reaches the section audit. The back-matter
-    text is still embedded and searchable; it just stops being mis-filed as
-    sections of the last chapter.
+    `body_end` is the block where back matter begins: pass the model-identified
+    boundary from the chapter audit (an int, or None meaning "no back matter"),
+    or leave it at the default to fall back to the _body_end_index marker
+    heuristic (used on the no-LLM path). Everything at or after the boundary is
+    removed from the chapter/section assignment, so the final chapter ends with
+    the body; the back-matter text is still embedded and searchable, just not
+    mis-filed as sections of the last chapter.
     """
-    end = _body_end_index(blocks)
-    if end is None:
+    # Use the model's boundary when it found one; otherwise (default, or the
+    # model returned None — it can miss an obvious "Index" when it runs peekless
+    # on a flat-heading book) fall back to the marker heuristic as a backstop.
+    if body_end is None or body_end == _AUTO_BODY_END:
+        body_end = _body_end_index(blocks)
+    if body_end is None:
         return structure
+    end = body_end
+    # Earliest block per section title from the current mapping, so we can also
+    # drop heuristic chapter.sections that sit in the back matter — trimming the
+    # block_to_* dicts alone leaves the Section objects (which survive when a
+    # chapter's section audit later fails and keeps its heuristic sections).
+    title_block: dict[str, int] = {}
+    for i, t in structure.block_to_section.items():
+        if i < title_block.get(t, len(blocks)):
+            title_block[t] = i
     structure.block_to_chapter = {
         i: c for i, c in structure.block_to_chapter.items() if i < end
     }
     structure.block_to_section = {
         i: t for i, t in structure.block_to_section.items() if i < end
     }
+    kept = set(structure.block_to_chapter.values())
+    structure.chapters = [c for c in structure.chapters if c.number in kept]
+    for chapter in structure.chapters:
+        chapter.sections = [
+            s for s in chapter.sections if title_block.get(s.title, -1) < end
+        ]
     return structure
 
 

@@ -623,11 +623,12 @@ def index_book(
         if audit.applied:
             structure_source = "blocks+llm"
             print(f"  Structure audit: {audit.reason}")
+            # Trim at the model-identified back-matter boundary.
+            structure = trim_back_matter(structure, blocks, body_end=audit.body_end)
         else:
             print(f"  Structure audit: no change ({audit.reason})")
-        # Drop back matter (index, EULA, about-the-author, colophon) so it does
-        # not fold into the last chapter's range or its section audit.
-        structure = trim_back_matter(structure, blocks)
+            # No LLM boundary available; fall back to the marker heuristic.
+            structure = trim_back_matter(structure, blocks)
         # Per-chapter section audit: replace the heuristic "every SectionHeader is
         # a section" with a focused LLM pass per chapter. Keeps a chapter's
         # heuristic sections if its audit fails, so it only ever improves on them.
