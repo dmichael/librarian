@@ -31,9 +31,11 @@ EPUB extraction uses `markdownify`. Install it in your venv:
 pip install markdownify
 ```
 
-## Ollama errors (classify/ask)
+## Ollama errors (classify)
 
-The `classification` section in `config/settings.yaml` is also used by `librarian-ask` for synthesis.
+The `classification` section in `config/settings.yaml` drives book/chapter
+summaries and structure audits at index time, and tag suggestion via
+`suggest_tags`.
 
 Common checks:
 

@@ -36,7 +36,7 @@ cp config/settings.local.example.yaml config/settings.local.yaml
 
 Then edit paths/models as needed.
 
-## 4) One file end-to-end (MCP tools → ask)
+## 4) One file end-to-end (MCP tools → search)
 
 The MCP server is the pipeline; its tools key on integer book ids. PDFs need
 `LIBRARIAN_SPARK_URL` (and `GROBID_BASE_URL` for references) set.
@@ -49,7 +49,7 @@ The MCP server is the pipeline; its tools key on integer book ids. PDFs need
 4) Search via the `search` / `text_search` MCP tools, or from a shell:
 
 ```bash
-librarian-ask "What are the main ideas in this book?"
+librarian-query "What are the main ideas in this book?"
 librarian-query --subject psychology/* "emotion regulation"
 ```
 
@@ -57,7 +57,7 @@ librarian-query --subject psychology/* "emotion regulation"
 
 - Re-extract / re-index a book: `extract_book(book_id, force=True)`, then
   `index_book(book_id, force=True)`
-- Scoped RAG: `librarian-ask --library therapy "How do I cope when overwhelmed?"`
+- Scoped query: `librarian-query --library therapy "How do I cope when overwhelmed?"`
 
 `librarian-classify` and `librarian-enrich` are maintenance utilities — they
 read/write the `books` table.

@@ -52,7 +52,6 @@ serve = [
 [project.scripts]
 # Query and search
 librarian-query = "librarian.query:main"
-librarian-ask = "librarian.ask:main"
 librarian-read = "librarian.read:main"
 # Utilities
 librarian-classify = "librarian.classify:main"

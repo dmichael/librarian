@@ -92,7 +92,7 @@ Extraction and indexing run through the MCP server tools (`extract_book`,
 `index_book`) — there is no file-mode CLI. Remaining shell utilities:
 
 - `librarian-serve` — MCP server
-- `librarian-query` / `librarian-ask` — retrieval / RAG
+- `librarian-query` — retrieval
 - `librarian-classify` / `librarian-enrich` — books-table utilities
 
 Run via venv, for example:
